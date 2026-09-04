@@ -375,7 +375,7 @@ impl AvailabilityMonitor {
             .collect()
     }
 
-    #[cfg(test)]
+    /// 단일 CLI 스냅샷 (로그인 흐름의 상태 확인 등)
     pub fn get(&self, cli: CliId) -> Option<&AvailabilitySnapshot> {
         self.map.get(&cli)
     }

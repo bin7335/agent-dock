@@ -11,7 +11,9 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use adapters::{line_has_id, AgentEvent, CliAdapter, LoginFlow, ModelListing};
-use availability::{AvailabilityMonitor, AvailabilitySnapshot, FailureKind, ProbeOutcome};
+use availability::{
+    AvailabilityMonitor, AvailabilitySnapshot, AvailabilityState, FailureKind, ProbeOutcome,
+};
 use models::{CliId, CommandSpec, Job, JobStatus, ModelOption};
 use scheduler::RoutingProfile;
 use tauri::{AppHandle, Emitter, Manager};
@@ -22,6 +24,8 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(20);
 const MODEL_LIST_TIMEOUT: Duration = Duration::from_secs(30);
 /// 로그인 흐름 상한 — 브라우저 로그인을 기다린다
 const LOGIN_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+/// 로그인 콘솔이 열려 있는 동안 재검사 주기. 브라우저 로그인이 끝나면 창을 닫지 않아도 곧 초록으로 바뀐다.
+const LOGIN_POLL: Duration = Duration::from_secs(8);
 /// 모니터 틱 간격. 틱마다 쿨다운 만료·재검사 예정만 확인하므로 가볍다.
 const TICK_INTERVAL: Duration = Duration::from_secs(30);
 /// 마지막 가용성 스냅샷 보존 파일 (앱 데이터 폴더). 재시작 후 Claude의 공식 사용률을 잃지 않기 위해.
@@ -436,14 +440,46 @@ fn write_login_script(
             }
         })
         .collect();
+    // 콘솔은 앱의 PATH를 물려받는데 winget 설치 경로(agy 등)가 빠져 있을 수 있다.
+    // 러너와 같은 규칙으로 찾은 실행 파일을 call로 부른다 (.cmd 셔틀도 call이면 제어가 돌아온다).
+    let program = runner::resolve_program(&spec.program)
+        .map(|p| format!("{q}{}{q}", p.display(), q = '"'))
+        .unwrap_or_else(|| spec.program.clone());
     let script = format!(
-        "@echo off\r\ntitle Agent Dock - {label} login\r\necho [Agent Dock] Starting {label} login. Follow the instructions below (a browser may open).\r\necho.\r\n{program} {args}\r\necho.\r\necho Done. Press any key to close this window; Agent Dock will re-check the status.\r\npause >nul\r\n",
+        "@echo off\r\ntitle Agent Dock - {label} login\r\necho [Agent Dock] Starting {label} login. Follow the instructions below (a browser may open).\r\necho.\r\ncall {program} {args}\r\necho.\r\necho Done. Press any key to close this window; Agent Dock will re-check the status.\r\npause >nul\r\nexit\r\n",
         label = cli.label(),
-        program = spec.program,
+        program = program,
         args = args.join(" ")
     );
     std::fs::write(&path, script).map_err(|e| e.to_string())?;
     Ok(path)
+}
+
+/// 로그인 콘솔을 기다린 결과
+enum LoginWait {
+    /// 콘솔이 열린 채로 재검사에서 로그인이 확인됨
+    SignedIn,
+    /// 사용자가 콘솔을 닫음
+    Closed,
+    /// LOGIN_TIMEOUT 초과
+    TimedOut,
+}
+
+/// 재검사 결과가 로그인 필요·불가·미확인이 아니면 로그인된 것으로 본다.
+fn is_signed_in(monitor: &Arc<Mutex<AvailabilityMonitor>>, cli: CliId) -> bool {
+    monitor
+        .lock()
+        .ok()
+        .and_then(|m| m.get(cli).map(|s| s.state))
+        .map(|state| {
+            !matches!(
+                state,
+                AvailabilityState::AuthRequired
+                    | AvailabilityState::Unavailable
+                    | AvailabilityState::Unknown
+            )
+        })
+        .unwrap_or(false)
 }
 
 /// 앱에서 CLI 로그인 흐름을 띄운다 (PRD 6장: 기존 CLI 로그인 방식 그대로). 끝나면 해당 CLI를 재검사한다.
@@ -473,13 +509,36 @@ async fn login_cli(
                 cwd: String::new(),
                 stdin: None,
             };
-            let out = runner::run_capture(&launcher, LOGIN_TIMEOUT)
-                .await
+            // 콘솔이 열려 있는 동안 주기적으로 재검사한다. 창을 닫지 않으면 10분 타임아웃까지
+            // 빨간불이 유지되던 문제(2026-09-04 Codex 로그인 E2E)를 막기 위함.
+            let mut child = runner::spawn_silent(&launcher)
                 .map_err(|e| format!("로그인 창 실행 실패: {e}"))?;
-            if out.timed_out {
-                format!("{hint} 로그인 창이 아직 열려 있습니다. 끝나면 재검사를 눌러 주세요.")
-            } else {
-                "로그인 창이 닫혔습니다. 상태를 다시 확인했습니다.".to_string()
+            let monitor = Arc::clone(&state.monitor);
+            let started = std::time::Instant::now();
+            let mut wait = LoginWait::TimedOut;
+            while started.elapsed() < LOGIN_TIMEOUT {
+                tokio::select! {
+                    _ = child.wait() => {
+                        wait = LoginWait::Closed;
+                        break;
+                    }
+                    _ = tokio::time::sleep(LOGIN_POLL) => {
+                        run_probes(&app, &monitor, &[cli]).await;
+                        if is_signed_in(&monitor, cli) {
+                            wait = LoginWait::SignedIn;
+                            break;
+                        }
+                    }
+                }
+            }
+            match wait {
+                LoginWait::SignedIn => {
+                    "로그인이 확인됐습니다. 콘솔 창은 아무 키나 눌러 닫으면 됩니다.".to_string()
+                }
+                LoginWait::Closed => "로그인 창이 닫혔습니다. 상태를 다시 확인했습니다.".to_string(),
+                LoginWait::TimedOut => {
+                    format!("{hint} 로그인 창이 아직 열려 있습니다. 끝나면 재검사를 눌러 주세요.")
+                }
             }
         }
         LoginFlow::Exchange { exchange, hint } => {

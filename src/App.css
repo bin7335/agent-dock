@@ -66,6 +66,7 @@ body {
 
 .evidence {
   font-size: 11px;
+  white-space: nowrap;
   padding: 1px 6px;
   border-radius: 6px;
   background: #2e323c;
@@ -315,6 +316,7 @@ button:disabled {
 button.small {
   padding: 3px 8px;
   font-size: 12px;
+  white-space: nowrap;
 }
 
 .transcript {

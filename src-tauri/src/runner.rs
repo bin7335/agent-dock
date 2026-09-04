@@ -185,6 +185,16 @@ pub async fn run_capture(spec: &CommandSpec, timeout: Duration) -> std::io::Resu
     }
 }
 
+/// 출력을 받지 않고 프로세스만 띄운다 (로그인 콘솔 런처 등). 핸들을 놓아도 프로세스는 살아 있다.
+pub fn spawn_silent(spec: &CommandSpec) -> std::io::Result<tokio::process::Child> {
+    let mut cmd = os_command(spec);
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .kill_on_drop(false);
+    cmd.spawn()
+}
+
 /// 줄 단위 프로토콜(JSON-RPC over stdio 등) 교환. 프로세스를 띄워 inputs를 한 줄씩 써 넣고,
 /// done(line)이 true인 줄을 받을 때까지 stdout을 모은다. 끝나거나 timeout이 지나면 프로세스를 죽인다.
 /// 용도: Codex `app-server`의 `account/rateLimits/read` (PRD 15장 스파이크, 2026-09-04 실측).
@@ -260,7 +270,7 @@ fn os_command(spec: &CommandSpec) -> Command {
 }
 
 /// Windows에서만 PATH를 뒤진다. 경로 구분자나 확장자가 이미 있으면 그대로 둔다.
-fn resolve_program(program: &str) -> Option<PathBuf> {
+pub(crate) fn resolve_program(program: &str) -> Option<PathBuf> {
     if !cfg!(windows) {
         return None;
     }
