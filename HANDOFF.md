@@ -48,6 +48,8 @@ ode_modules\@anthropic-ai\claude-codein\claude.exe`, 220MB)를 스캔해 이 CL
 - 폴더당 동시 1개 잠금(`Runner::running_count`)·SQLite 영속화 미배선
 - OpenCode 실행 E2E(앱 안에서 대화·재개)와 각 CLI 로그인 버튼 E2E 미수행. Gemini ACP authenticate가 브라우저를 여는지도 미확인
 - OpenCode 프롬프트도 인자 전달(줄바꿈 불가). `--agent plan`이 읽기 전용 내장 에이전트라는 전제
+- 슬래시 명령·스킬(2026-09-04 실측): Claude 커스텀 명령·스킬은 stdin 프롬프트로도 동작(앱에서 `/trigger` 등 OK), Gemini 커스텀 명령 OK, Codex 스킬은 `$이름` 언급, OpenCode run 모드는 `/이름` 미확장. 내장 UI 명령(`/help` `/model` `/auth`…)은 전부 대화형 전용 → 앱 기능(모델 선택·로그인·상태바)으로 대체
+- 보류: 설정 패널 "CLI 추가"(범용 사용자 정의 어댑터). CliId enum → 문자열 id 리팩터링이 선행 과제
 - E2E 자동화 메모: DPI 비인식 프로세스의 `CopyFromScreen`은 125% 모니터에서 캡처가 잘린다(`SetProcessDPIAware` 선행). PowerShell 변수는 대소문자를 구분하지 않아 `$h`/`$H`가 충돌한다. 한글 IME 상태의 `SendKeys`는 자모로 입력되므로 `Set-Clipboard` + `^v`로 붙여넣는다
 
 ## 다음 단계 (PRD 14장 "구현 현황"과 동일)
