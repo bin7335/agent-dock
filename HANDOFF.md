@@ -40,9 +40,9 @@ ode_modules\@anthropic-ai\claude-codein\claude.exe`, 220MB)를 스캔해 이 CL
 
 ## 알려진 한계·TODO
 
-- Antigravity 앱 내 대화 E2E 미수행(헤드리스 stream-json·모델 목록은 실측). 사용량은 TUI `/usage`만 있어 헤드리스 신호 없음(추정 경로). AI Pro는 5시간 창 + 주간 상한
+- Antigravity 앱 내 대화 E2E 통과(2026-09-04 21:16, 화면 자동 조작): 세션 재개·도구 호출 표시 확인. 읽기 전용(plan) 모드에서는 명령 실행 권한이 헤드리스에서 자동 거부되며 그 안내가 system 줄로 표시됨(쓰기 허용 시 --dangerously-skip-permissions). 사용량은 TUI `/usage`만 있어 헤드리스 신호 없음(추정 경로). AI Pro는 5시간 창 + 주간 상한
 - Gemini CLI는 개인 Google 로그인이 막혀(IneligibleTierError) API 키·flash 전용으로 남김. 필요 없으면 CLI 설정에서 끄기
-- 대화 중 CLI 전환은 앱 UI 기준 E2E 미수행(handoff 문단으로 Claude→Codex 암호어 전달은 CLI 직접 호출로 검증)
+- 대화 중 CLI 전환 앱 E2E 통과: Claude(암호어 KIWI-77) → Antigravity 전환 후 암호어 정답 → Claude 복귀(기존 세션 재개, 그사이 대화 3항목 전달) → BACK_OK. OpenCode 앱 내 대화도 통과(OC_APP_OK)
 - Claude·Codex probe는 버전을 안 돌려줘 상세 패널이 "버전 ?" → `--version` 별도 probe 추가 여지
 - Gemini 세션 재개는 UUID를 못 받아 `--resume latest` 의존
 - Gemini 텔레메트리(2026-09-04 검토, 미구현): `GEMINI_TELEMETRY_ENABLED=true` `GEMINI_TELEMETRY_TARGET=local` `GEMINI_TELEMETRY_OUTFILE=<경로>`(또는 프로젝트 settings.json `telemetry`)로 켜면 OTLP JSON에 `gemini_cli.api_error`(model_name, 429 본문 QuotaFailure.violations[].quotaId/…PerDay…|…PerMinute…, RetryInfo.retryDelay), `gemini_cli.api_response`(model, 토큰), `gemini_cli.flash_fallback`, `gemini_cli.model_routing` 기록. 이 계정은 무료 API 키라 pro가 limit 0 → 매번 429 후 flash 폴백. 모델별 한도 감지·장부의 재료
@@ -51,7 +51,7 @@ ode_modules\@anthropic-ai\claude-codein\claude.exe`, 220MB)를 스캔해 이 CL
 - Codex 모델별 한도(`rateLimitsByLimitId`, 5시간·7일 윈도우)는 아직 표시하지 않고 계정 단위 `rateLimits`만 쓴다
 - 라우팅 체인은 localStorage에만 저장(SQLite 배선 전). 폴더 잠금(`Runner::running_count`)도 미배선
 - 폴더당 동시 1개 잠금(`Runner::running_count`)·SQLite 영속화 미배선
-- OpenCode 실행 E2E(앱 안에서 대화·재개)와 각 CLI 로그인 버튼 E2E 미수행. Gemini ACP authenticate가 브라우저를 여는지도 미확인
+- 각 CLI 로그인 버튼 E2E 미수행(계정이 전부 로그인 상태). Gemini ACP authenticate는 브라우저 로그인 흐름이 실제로 동작함을 확인(2026-09-04, 단 Gemini CLI 개인 계정은 종료 상태)
 - OpenCode `--agent plan`이 읽기 전용 내장 에이전트라는 전제
 - 슬래시 명령·스킬(2026-09-04 실측): Claude 커스텀 명령·스킬은 stdin 프롬프트로도 동작(앱에서 `/trigger` 등 OK), Gemini 커스텀 명령 OK, Codex 스킬은 `$이름` 언급, OpenCode run 모드는 `/이름` 미확장. 내장 UI 명령(`/help` `/model` `/auth`…)은 전부 대화형 전용 → 앱 기능(모델 선택·로그인·상태바)으로 대체
 - 보류: 설정 패널 "CLI 추가"(범용 사용자 정의 어댑터). CliId enum → 문자열 id 리팩터링이 선행 과제
