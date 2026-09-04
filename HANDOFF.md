@@ -40,6 +40,7 @@ ode_modules\@anthropic-ai\claude-codein\claude.exe`, 220MB)를 스캔해 이 CL
 
 ## 알려진 한계·TODO
 
+- 승인 실시간 중계(2026-09-04): **Claude만**. `--permission-prompt-tool stdio` + stream-json 입력(프롬프트는 user 메시지 JSON). 러너가 stdin을 열어 두고 `result` 뒤 닫는다. `respond_permission`(허용·거부·세션 동안 허용=updatedPermissions), 10분 무응답 자동 거부. CLI 동작: acceptEdits는 파일시스템 Bash(`echo >`, mkdir)도 자동 승인, plan은 읽기 전용 명령(echo 등) 자동 실행 → 카드는 python·npm·git 쓰기 등에서 뜬다. Codex(app-server 전환 필요)·Gemini(ACP `session/request_permission`)·OpenCode(serve) 미지원
 - Antigravity 앱 내 대화 E2E 통과(2026-09-04 21:16, 화면 자동 조작): 세션 재개·도구 호출 표시 확인. 읽기 전용(plan) 모드에서는 명령 실행 권한이 헤드리스에서 자동 거부되며 그 안내가 system 줄로 표시됨(쓰기 허용 시 --dangerously-skip-permissions). 사용량은 TUI `/usage`만 있어 헤드리스 신호 없음(추정 경로). AI Pro는 5시간 창 + 주간 상한
 - Gemini CLI는 개인 Google 로그인이 막혀(IneligibleTierError) API 키·flash 전용으로 남김. 필요 없으면 CLI 설정에서 끄기
 - 대화 중 CLI 전환 앱 E2E 통과: Claude(암호어 KIWI-77) → Antigravity 전환 후 암호어 정답 → Claude 복귀(기존 세션 재개, 그사이 대화 3항목 전달) → BACK_OK. OpenCode 앱 내 대화도 통과(OC_APP_OK)
@@ -59,7 +60,7 @@ ode_modules\@anthropic-ai\claude-codein\claude.exe`, 220MB)를 스캔해 이 CL
 
 ## 다음 단계 (PRD 14장 "구현 현황"과 동일)
 
-1. 승인 실시간 중계(`--input-format stream-json`) 검증
+1. 승인 중계 확장: Codex 대화를 app-server(`thread/start`·`turn/start` + `item/*/requestApproval`)로 전환, Gemini ACP `session/request_permission`
 2. 2단계 자동 폴백: cooldown·429 시 handoff 패킷(`referenced_files` 포함) 생성 → 다음 ready CLI 실행, 무인 정책(쓰기 작업 Git 자동 체크포인트), 서킷 브레이커(동일 오류 3회 → blocked)
 3. Codex stderr 진단 로그 접기, Codex 모델별 한도 표시 여부, Antigravity plan 모드 명령 허용 규칙 검토, (선택) Claude 로그인 버튼 실제 재로그인 E2E
 4. 트레이 상주, SQLite 영속화(라우팅 체인·대화·작업·스냅샷), 폴더 잠금
