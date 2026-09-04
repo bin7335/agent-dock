@@ -34,6 +34,7 @@ PRD·설계 근거·스파이크 실측·구현 현황의 원본은 위키 `wiki
 - Codex·Gemini 프롬프트는 아직 인자로 전달 → 줄바꿈이 든 메시지는 spawn 단계에서 오류("batch file arguments are invalid" 계열). stdin 전달 실측 후 어댑터 전환
 - Claude·Codex probe는 버전을 안 돌려줘 상세 패널이 "버전 ?" → `--version` 별도 probe 추가 여지
 - Gemini 세션 재개는 UUID를 못 받아 `--resume latest` 의존
+- Gemini 사용량은 능동 조회 불가(2026-09-04 재확인): CLI가 내부적으로 Code Assist `retrieveUserQuota`를 불러 대화형 화면에만 표시하고, 헤드리스 stream-json·ACP(`gemini --acp`: initialize/session/new 정상) 어디에도 노출하지 않는다. OAuth 토큰은 평문 파일에 없음. 앱은 429·"exhausted your daily quota" 문구와 retry-after 값으로 반응적 쿨다운만 잡는다. ACP는 `loadSession:true`·세션 id를 주므로 `--resume latest` 한계의 대안 후보
 - Codex stderr 진단 로그가 채팅 system 라인으로 노출 — 필터/접기 필요
 - Codex 모델별 한도(`rateLimitsByLimitId`, 5시간·7일 윈도우)는 아직 표시하지 않고 계정 단위 `rateLimits`만 쓴다
 - 라우팅 체인은 localStorage에만 저장(SQLite 배선 전). 폴더 잠금(`Runner::running_count`)도 미배선

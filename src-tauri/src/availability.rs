@@ -141,6 +141,9 @@ pub fn classify_failure(text: &str) -> FailureKind {
         "limit exceeded",
         "overloaded",
         "resets at",
+        // Gemini CLI: "You have exhausted your daily quota on this model." (0.54 번들 실측)
+        "exhausted",
+        "daily quota",
     ];
     const AUTH: &[&str] = &[
         "not logged in",
@@ -204,6 +207,33 @@ pub fn window_name_for_minutes(mins: i64) -> String {
         m if m > 0 && m % 60 == 0 => format!("{}h", m / 60),
         m => format!("{m}m"),
     }
+}
+
+/// 오류 원문의 재시도 지연을 초 단위로 뽑는다.
+/// 예: `retry in 32s`, `Retry-After: 45`, `"retryDelay": "17s"`, `retry after 2 minutes`.
+pub fn extract_retry_after_secs(text: &str) -> Option<i64> {
+    let t = text.to_ascii_lowercase();
+    let keys = ["retry-after", "retrydelay", "retry in", "retry after", "try again in"];
+    let start = keys.iter().filter_map(|k| t.find(k).map(|i| i + k.len())).min()?;
+    let rest = &t[start..];
+    let num_start = rest.find(|c: char| c.is_ascii_digit())?;
+    let digits: String = rest[num_start..]
+        .chars()
+        .take_while(|c| c.is_ascii_digit() || *c == '.')
+        .collect();
+    let value: f64 = digits.parse().ok()?;
+    let unit = rest[num_start + digits.len()..].trim_start();
+    let secs = if unit.starts_with("ms") {
+        value / 1000.0
+    } else if unit.starts_with('m') {
+        value * 60.0
+    } else if unit.starts_with('h') {
+        value * 3600.0
+    } else {
+        value
+    };
+    let secs = secs.ceil() as i64;
+    (secs > 0).then_some(secs)
 }
 
 /// probe 명령의 해석 결과 (어댑터가 만든다)
@@ -384,7 +414,9 @@ impl AvailabilityMonitor {
                 let relapse = s
                     .recovered_at
                     .map_or(false, |t| now - t <= RELAPSE_WINDOW_SECS);
-                let hinted = extract_reset_epoch(text).filter(|t| *t > now);
+                let hinted = extract_reset_epoch(text)
+                    .filter(|t| *t > now)
+                    .or_else(|| extract_retry_after_secs(text).map(|d| now + d));
                 let until = if relapse {
                     now + LONG_COOLDOWN_SECS
                 } else if let Some(t) = hinted {
@@ -649,6 +681,27 @@ mod tests {
             Some(1_725_436_800)
         );
         assert_eq!(extract_reset_epoch("no epoch here 12345"), None);
+        assert_eq!(
+            classify_failure("You have exhausted your daily quota on this model."),
+            FailureKind::RateLimit
+        );
+    }
+
+    #[test]
+    fn retry_after_is_parsed_and_used() {
+        assert_eq!(extract_retry_after_secs("429: retry in 32s"), Some(32));
+        assert_eq!(extract_retry_after_secs("Retry-After: 45"), Some(45));
+        assert_eq!(extract_retry_after_secs(r#""retryDelay": "17s""#), Some(17));
+        assert_eq!(extract_retry_after_secs("please retry after 2 minutes"), Some(120));
+        assert_eq!(extract_retry_after_secs("retry in 1500ms"), Some(2));
+        assert_eq!(extract_retry_after_secs("no hint"), None);
+
+        let mut m = monitor();
+        m.apply_failure(CliId::Gemini, "429 Too Many Requests, retry in 40s", T0);
+        let s = m.get(CliId::Gemini).unwrap();
+        assert_eq!(s.state, AvailabilityState::Cooldown);
+        assert_eq!(s.next_check_at, Some(T0 + 40));
+        assert_eq!(s.evidence, Evidence::CliReported);
     }
 
     #[test]
