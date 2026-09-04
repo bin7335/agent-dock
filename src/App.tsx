@@ -377,8 +377,6 @@ function App() {
         {cliOrder.map((id, i) => {
           const s = statuses.find((x) => x.cli === id);
           const state = s?.state ?? "unknown";
-          const evidence = s?.evidence ?? "estimated";
-          const u = s ? maxUtil(s) : null;
           return (
             <div
               key={id}
@@ -405,12 +403,11 @@ function App() {
                 setDragOver(null);
               }}
             >
+              {/* 상단 카드는 사용 가능 여부만 — 사용률·근거는 하단 상태바와 상세 패널에서 (2026-09-04 사용자 요청) */}
               <span className="prio">{i + 1}</span>
               <span className="dot" />
               <span className="cli-name">{CLI_LABEL[id]}</span>
               <span className="cli-state">{STATE_LABEL[state]}</span>
-              {u !== null && <span className="cli-util">{pct(u)}</span>}
-              <span className={`evidence evidence-${evidence}`}>{EVIDENCE_BADGE[evidence]}</span>
             </div>
           );
         })}

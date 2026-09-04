@@ -245,6 +245,30 @@ impl AvailabilityMonitor {
         self.order.clone()
     }
 
+    /// 저장된 스냅샷 복원(앱 재시작). Claude처럼 실행 스트림에서만 오는 공식 사용률을 잃지 않기 위한 것.
+    /// 리셋이 지났거나 리셋 시각을 모르는 윈도우는 버리고, 남은 공식 윈도우로 상태를 다시 유도한다.
+    /// 복원 직후 바로 probe하도록 next_check_at은 now로 둔다.
+    pub fn import(&mut self, stored: Vec<AvailabilitySnapshot>, now: i64) {
+        for mut s in stored {
+            let Some(slot) = self.map.get_mut(&s.cli) else {
+                continue;
+            };
+            s.windows.retain(|w| w.resets_at.map_or(false, |t| t > now));
+            s.state = if s.state == AvailabilityState::Cooldown && !s.all_windows_reset(now) {
+                AvailabilityState::Cooldown
+            } else if s.has_official_windows() {
+                s.state_from_windows()
+            } else {
+                AvailabilityState::Unknown
+            };
+            if s.state == AvailabilityState::Unknown {
+                s.evidence = Evidence::Estimated;
+            }
+            s.next_check_at = Some(now);
+            *slot = s;
+        }
+    }
+
     /// 라우팅 우선순위 변경에 맞춰 스냅샷 순서를 바꾼다. 목록에 없는 기존 CLI는 뒤에 붙이고 모르는 CLI는 무시한다.
     pub fn set_order(&mut self, order: &[CliId]) {
         let mut next: Vec<CliId> = Vec::new();
@@ -625,6 +649,35 @@ mod tests {
             Some(1_725_436_800)
         );
         assert_eq!(extract_reset_epoch("no epoch here 12345"), None);
+    }
+
+    #[test]
+    fn import_keeps_pending_windows_and_drops_expired() {
+        let mut src = monitor();
+        src.apply_rate_limit(CliId::Claude, "five_hour", 0.3, T0 + 100, T0);
+        src.apply_rate_limit(CliId::Claude, "seven_day", 0.6, T0 + 100_000, T0);
+
+        let mut m = monitor();
+        m.import(src.snapshots(), T0 + 200);
+        let s = m.get(CliId::Claude).unwrap();
+        assert_eq!(s.windows.len(), 1, "5시간 윈도우는 리셋이 지나 폐기");
+        assert_eq!(s.windows[0].name, "seven_day");
+        assert_eq!(s.state, AvailabilityState::Available);
+        assert_eq!(s.evidence, Evidence::Official);
+        assert_eq!(s.next_check_at, Some(T0 + 200));
+
+        let mut all_expired = monitor();
+        all_expired.import(src.snapshots(), T0 + 200_000);
+        let s = all_expired.get(CliId::Claude).unwrap();
+        assert_eq!(s.state, AvailabilityState::Unknown);
+        assert!(s.windows.is_empty());
+
+        // 아직 진행 중인 쿨다운은 유지
+        let mut cd = monitor();
+        cd.apply_failure(CliId::Codex, "429", T0);
+        let mut m3 = monitor();
+        m3.import(cd.snapshots(), T0 + 60);
+        assert_eq!(m3.get(CliId::Codex).unwrap().state, AvailabilityState::Cooldown);
     }
 
     #[test]

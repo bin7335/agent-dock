@@ -24,6 +24,8 @@ PRD·설계 근거·스파이크 실측·구현 현황의 원본은 위키 `wiki
 - 프로세스 실행: Windows에서 PATH를 뒤져 실제 파일 경로(.exe → .cmd → .bat)로 실행. .cmd는 Rust std가 cmd.exe 경유 + 안전 이스케이프를 맡는다(CVE-2024-24576 대응). 줄바꿈 인자는 그 단계에서 거부되므로 Claude 프롬프트는 stdin으로 넘긴다(실측: `echo … | claude -p` 정상)
 - Codex 공식 사용량: `codex app-server`(stdio JSON-RPC)에 `initialize` → `initialized` → `account/rateLimits/read` 3줄을 일괄 전송(`runner::exchange_lines`, 1.2초). 응답 `rateLimits.primary/secondary{usedPercent, windowDurationMins, resetsAt}`를 five_hour/seven_day 이름으로 정규화해 `apply_rate_limit` → 상태바 "46% · 리셋 ↻ · 공식". `rateLimitReachedType`이 있으면 100%로. probe가 Ready인 CLI만 읽는다
 - 우선순위 드래그: 상단 카드(순위 번호)를 HTML5 드래그로 옮기면 `set_routing_chain`이 라우팅 프로필·모니터 순서·추천 CLI를 갱신하고 localStorage(`agentdock.chain`)에 저장, 시작 시 복원. Windows 웹뷰에서 HTML 드래그가 되려면 `tauri.conf.json` 창의 `dragDropEnabled:false` 필요(적용됨). 기본 창 1100×760
+- 스냅샷 보존: 가용성이 바뀔 때마다 `%APPDATA%\com.user.agent-dockvailability.json`에 저장하고 시작 시 `import`로 복원(리셋 지난 윈도우 폐기, 진행 중 쿨다운 유지). Claude 사용률은 실행 스트림에서만 오므로 이 파일이 없으면 재시작 후 다음 Claude 실행까지 "?"다. Gemini는 CLI가 사용량을 제공하지 않아 항상 "?"(추정)이며 429 관측 시에만 추정 쿨다운
+- 상단 카드는 순위·사용 가능 여부만 표시(사용률·근거는 상태바·상세 패널) — 2026-09-04 사용자 요청
 - 프론트(`src/App.tsx`): 채팅 UI(세션 재개·폴더 고정) + 상단 카드·하단 상태바 실데이터 + 상태바 클릭 상세 패널(윈도우별 사용률·리셋·근거·버전·갱신·다음 재검사·마지막 오류·재검사 버튼) + 툴바 "추천: CLI" + 중지된 실행은 "중지됨"
 - E2E 실측(2026-09-04, 캡처 `D:\temp\claude\d--OneDrive-----------0bin\<session>\scratchpad\agentdock-2x.png`): 채팅 시작→응답, `--resume` 후속 질문, 여러 줄 프롬프트(stdin) → 두 줄 응답, Claude rate_limit → 상태바 "14% · 17:40 ↻ · 공식", 중지 → "중지됨", 폴더 대화상자(D:\dev에서 열림), probe → Codex/Claude "CLI 제시", Gemini "추정"
 

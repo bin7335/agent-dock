@@ -14,10 +14,35 @@ use adapters::{AgentEvent, CliAdapter};
 use availability::{AvailabilityMonitor, AvailabilitySnapshot, FailureKind, ProbeOutcome};
 use models::{CliId, CommandSpec, Job, JobStatus};
 use scheduler::RoutingProfile;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
 /// probe 명령(version·login status) 상한. 넘기면 죽이고 unavailable로 본다.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(20);
+/// 마지막 가용성 스냅샷 보존 파일 (앱 데이터 폴더). 재시작 후 Claude의 공식 사용률을 잃지 않기 위해.
+const STORE_FILE: &str = "availability.json";
+
+fn store_path(app: &AppHandle) -> Option<std::path::PathBuf> {
+    app.path().app_data_dir().ok().map(|d| d.join(STORE_FILE))
+}
+
+fn save_store(app: &AppHandle, snaps: &[AvailabilitySnapshot]) {
+    let Some(path) = store_path(app) else {
+        return;
+    };
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    if let Ok(json) = serde_json::to_string_pretty(snaps) {
+        let _ = std::fs::write(path, json);
+    }
+}
+
+fn load_store(app: &AppHandle) -> Vec<AvailabilitySnapshot> {
+    store_path(app)
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
+}
 /// 모니터 틱 간격. 틱마다 쿨다운 만료·재검사 예정만 확인하므로 가볍다.
 const TICK_INTERVAL: Duration = Duration::from_secs(30);
 
@@ -68,9 +93,11 @@ fn snapshots_of(monitor: &Mutex<AvailabilityMonitor>) -> Vec<AvailabilitySnapsho
     monitor.lock().map(|m| m.snapshots()).unwrap_or_default()
 }
 
-/// 가용성 변화를 프론트로 알린다. listen("availability-changed")
+/// 가용성 변화를 프론트로 알리고 파일에도 보존한다. listen("availability-changed")
 fn emit_availability(app: &AppHandle, monitor: &Mutex<AvailabilityMonitor>) {
-    let _ = app.emit("availability-changed", snapshots_of(monitor));
+    let snaps = snapshots_of(monitor);
+    save_store(app, &snaps);
+    let _ = app.emit("availability-changed", snaps);
 }
 
 /// 실행 스트림에서 한도·인증 신호를 뽑아 모니터에 반영한다 (PRD 6장: 스트림에서 한도 신호 수집).
@@ -301,6 +328,12 @@ pub fn run() {
         })
         .setup(move |app| {
             let handle = app.handle().clone();
+            // 이전 실행의 스냅샷 복원 (리셋이 지난 윈도우는 import에서 폐기)
+            let stored = load_store(&handle);
+            if let Ok(mut m) = monitor.lock() {
+                m.import(stored, now());
+            }
+            emit_availability(&handle, &monitor);
             // 가용성 모니터 루프: 시작 시 전체 probe → 30초마다 쿨다운 만료·재검사 예정 확인
             tauri::async_runtime::spawn(async move {
                 let all = monitor.lock().map(|m| m.clis()).unwrap_or_default();
