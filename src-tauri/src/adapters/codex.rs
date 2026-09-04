@@ -3,7 +3,9 @@ use serde_json::{json, Value};
 use super::{
     line_has_id, probe_detail, AgentEvent, CliAdapter, LineExchange, LoginFlow, ModelListing,
 };
-use crate::availability::{window_name_for_minutes, Evidence, ProbeOutcome, RateLimitReading};
+use crate::availability::{
+    window_name_for_minutes, AccountInfo, Evidence, ProbeOutcome, RateLimitReading,
+};
 use crate::models::{CliId, CommandSpec, Job, ModelOption};
 
 /// Codex 어댑터.
@@ -16,6 +18,8 @@ pub struct CodexAdapter;
 
 const RL_INIT_ID: u64 = 1;
 const RL_READ_ID: u64 = 2;
+/// 한도 교환에 같이 실어 보내는 `account/read` (2026-09-04 실측: `result.account{type,email,planType}`)
+const ACCOUNT_READ_ID: u64 = 3;
 const MODEL_LIST_ID: u64 = 2;
 
 fn app_server_spec() -> CommandSpec {
@@ -179,12 +183,26 @@ impl CliAdapter for CodexAdapter {
     }
 
     fn rate_limit_exchange(&self) -> Option<LineExchange> {
+        let mut inputs = app_server_inputs(
+            json!({"id": RL_READ_ID, "method": "account/rateLimits/read", "params": {}}),
+        );
+        inputs.push(json!({"id": ACCOUNT_READ_ID, "method": "account/read", "params": {}}).to_string());
         Some(LineExchange {
             spec: app_server_spec(),
-            inputs: app_server_inputs(
-                json!({"id": RL_READ_ID, "method": "account/rateLimits/read", "params": {}}),
-            ),
-            done_id: RL_READ_ID,
+            inputs,
+            done_id: ACCOUNT_READ_ID,
+        })
+    }
+
+    fn parse_account(&self, lines: &[String]) -> Option<AccountInfo> {
+        let line = lines.iter().find(|l| line_has_id(l, ACCOUNT_READ_ID))?;
+        let v = serde_json::from_str::<Value>(line).ok()?;
+        let acc = v.pointer("/result/account")?;
+        let text = |k: &str| acc.get(k).and_then(Value::as_str).map(String::from);
+        Some(AccountInfo {
+            label: text("email").unwrap_or_else(|| "ChatGPT 계정".into()),
+            plan: text("planType"),
+            method: text("type"),
         })
     }
 
@@ -292,11 +310,13 @@ impl CliAdapter for CodexAdapter {
             ProbeOutcome::Ready {
                 evidence: Evidence::CliReported,
                 version: None,
+                account: None,
             }
         } else if code == Some(0) {
             ProbeOutcome::Ready {
                 evidence: Evidence::Estimated,
                 version: None,
+                account: None,
             }
         } else {
             ProbeOutcome::Unavailable {
@@ -317,7 +337,8 @@ mod tests {
             CodexAdapter.interpret_probe(Some(0), "Logged in using ChatGPT\n", ""),
             ProbeOutcome::Ready {
                 evidence: Evidence::CliReported,
-                version: None
+                version: None,
+                account: None,
             }
         );
         assert!(matches!(
@@ -361,8 +382,24 @@ mod tests {
         assert!(CodexAdapter.parse_rate_limits(&[]).is_empty());
         let ex = CodexAdapter.rate_limit_exchange().unwrap();
         assert_eq!(ex.spec.args, vec!["app-server"]);
-        assert_eq!(ex.inputs.len(), 3);
+        assert_eq!(ex.inputs.len(), 4);
         assert!(ex.inputs[2].contains("account/rateLimits/read"));
+        assert!(ex.inputs[3].contains("account/read"));
+        assert_eq!(ex.done_id, 3);
+
+        // 2026-09-04 실측 account/read 응답
+        let acc_lines = vec![
+            r#"{"id":3,"result":{"account":{"type":"chatgpt","email":"user@example.com","planType":"prolite"},"requiresOpenaiAuth":true}}"#.to_string(),
+        ];
+        assert_eq!(
+            CodexAdapter.parse_account(&acc_lines),
+            Some(AccountInfo {
+                label: "user@example.com".into(),
+                plan: Some("prolite".into()),
+                method: Some("chatgpt".into()),
+            })
+        );
+        assert_eq!(CodexAdapter.parse_account(&lines), None);
     }
 
     /// 2026-09-04 실측 `model/list` 응답(요약)

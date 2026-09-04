@@ -72,6 +72,7 @@ mod tests {
         let ready = || ProbeOutcome::Ready {
             evidence: Evidence::CliReported,
             version: None,
+            account: None,
         };
         m.apply_probe(CliId::Codex, ready(), 0);
         m.apply_probe(CliId::Claude, ready(), 0);
@@ -102,6 +103,7 @@ mod tests {
             ProbeOutcome::Ready {
                 evidence: Evidence::CliReported,
                 version: None,
+                account: None,
             },
             0,
         );

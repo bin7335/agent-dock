@@ -1,7 +1,44 @@
 use serde_json::{json, Value};
 
-use super::{line_has_id, AgentEvent, CliAdapter, LineExchange, LoginFlow, ModelListing};
+use super::{
+    first_line, line_has_id, probe_detail, AgentEvent, CliAdapter, LineExchange, LoginFlow,
+    ModelListing,
+};
+use crate::availability::{AccountInfo, Evidence, ProbeOutcome};
 use crate::models::{CliId, CommandSpec, Job, ModelOption};
+
+/// `~/.gemini/google_accounts.json` → 계정 요약. `active`가 비어 있으면 `old`의 마지막 항목을 "이전 로그인 기록"으로 표시.
+/// (2026-09-04 실측: 로그인 상태인데도 active가 null이고 old에만 기록이 남아 있었다)
+pub fn account_from_json(raw: &str) -> Option<AccountInfo> {
+    let v = serde_json::from_str::<Value>(raw).ok()?;
+    if let Some(active) = v.get("active").and_then(Value::as_str) {
+        return Some(AccountInfo {
+            label: active.to_string(),
+            plan: None,
+            method: Some("Google OAuth".into()),
+        });
+    }
+    let old = v
+        .get("old")
+        .and_then(Value::as_array)?
+        .iter()
+        .filter_map(Value::as_str)
+        .last()?;
+    Some(AccountInfo {
+        label: format!("{old} (이전 로그인 기록)"),
+        plan: None,
+        method: Some("Google OAuth".into()),
+    })
+}
+
+fn local_account() -> Option<AccountInfo> {
+    let home = std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")).ok()?;
+    let path = std::path::Path::new(&home)
+        .join(".gemini")
+        .join("google_accounts.json");
+    let raw = std::fs::read_to_string(path).ok()?;
+    account_from_json(&raw)
+}
 
 /// Gemini CLI 어댑터.
 /// 실측 근거: `gemini -p -o stream-json --approval-mode ...` (스파이크 0, 2026-09-02).
@@ -156,6 +193,20 @@ impl CliAdapter for GeminiAdapter {
         })
     }
 
+    /// `--version` 정상 종료 = 설치 확인(추정). 계정은 로컬 기록 파일에서 읽는다.
+    fn interpret_probe(&self, code: Option<i32>, stdout: &str, stderr: &str) -> ProbeOutcome {
+        match code {
+            Some(0) => ProbeOutcome::Ready {
+                evidence: Evidence::Estimated,
+                version: first_line(stdout),
+                account: local_account(),
+            },
+            _ => ProbeOutcome::Unavailable {
+                detail: probe_detail(code, stdout, stderr),
+            },
+        }
+    }
+
     fn parse_models(&self, lines: &[String]) -> Vec<ModelOption> {
         let Some(line) = lines.iter().find(|l| line_has_id(l, ACP_SECOND_ID)) else {
             return vec![];
@@ -194,22 +245,27 @@ impl CliAdapter for GeminiAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::availability::{Evidence, ProbeOutcome};
     use crate::models::JobStatus;
 
     #[test]
-    fn version_probe_uses_default_interpretation() {
-        assert_eq!(
+    fn version_probe_and_local_account() {
+        assert!(matches!(
             GeminiAdapter.interpret_probe(Some(0), "0.54.4\n", ""),
             ProbeOutcome::Ready {
                 evidence: Evidence::Estimated,
-                version: Some("0.54.4".into())
-            }
-        );
+                version: Some(v),
+                ..
+            } if v == "0.54.4"
+        ));
         assert!(matches!(
             GeminiAdapter.interpret_probe(Some(1), "", "boom"),
             ProbeOutcome::Unavailable { .. }
         ));
+        let active = account_from_json(r#"{"active":"a@gmail.com","old":[]}"#).unwrap();
+        assert_eq!(active.label, "a@gmail.com");
+        let old = account_from_json(r#"{"active":null,"old":["x@gmail.com","y@gmail.com"]}"#).unwrap();
+        assert_eq!(old.label, "y@gmail.com (이전 로그인 기록)");
+        assert!(account_from_json(r#"{"active":null,"old":[]}"#).is_none());
     }
 
     /// 2026-09-04 ACP session/new 실측 응답(요약)

@@ -163,6 +163,12 @@ function dateTime(epoch: number | null): string {
   return `${d.getMonth() + 1}/${d.getDate()} ${clock(epoch)}`;
 }
 
+function accountLine(s: AvailabilitySnapshot): string {
+  if (!s.account) return "계정 정보 없음";
+  const extra = [s.account.plan, s.account.method].filter((v): v is string => !!v);
+  return extra.length ? `${s.account.label} (${extra.join(" · ")})` : s.account.label;
+}
+
 function maxUtil(s: AvailabilitySnapshot): number | null {
   const vals = s.windows.map((w) => w.utilization).filter((v): v is number => v !== null);
   return vals.length ? Math.max(...vals) : null;
@@ -656,6 +662,7 @@ function App() {
             ) : (
               <p className="muted">한도 윈도우 신호 없음 — 사용률은 표시하지 않습니다.</p>
             )}
+            <p className="muted">계정: {accountLine(detail)}</p>
             <p className="muted">
               라우팅 순위 {allOrder.indexOf(detail.cli) + 1}/{allOrder.length} · 버전 {detail.version ?? "?"} · 갱신{" "}
               {dateTime(detail.checked_at)} · 다음 재검사 {dateTime(detail.next_check_at)}
@@ -720,7 +727,7 @@ function App() {
                   <th>순위</th>
                   <th>CLI</th>
                   <th>상태</th>
-                  <th>버전</th>
+                  <th>계정</th>
                   <th>로그인</th>
                   <th>모델</th>
                 </tr>
@@ -760,7 +767,10 @@ function App() {
                         {s && <span className={`evidence evidence-${s.evidence}`}>{EVIDENCE_BADGE[s.evidence]}</span>}
                         {s?.last_error && <div className="error small-text">{s.last_error}</div>}
                       </td>
-                      <td>{s?.version ?? "?"}</td>
+                      <td className="small-text">
+                        {s ? accountLine(s) : "?"}
+                        {s?.version && <div className="muted">버전 {s.version}</div>}
+                      </td>
                       <td>
                         <button className="small" onClick={() => void login(id)} disabled={loginBusy !== null || !enabled}>
                           {loginBusy === id ? "진행 중…" : "로그인"}

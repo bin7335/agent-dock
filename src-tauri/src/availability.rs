@@ -35,6 +35,17 @@ pub struct RateWindow {
     pub resets_at: Option<i64>,
 }
 
+/// 로그인된 계정 요약 (PRD 6장 레지스트리의 "로그인 가능 여부"를 사람이 읽을 수 있게). 토큰은 담지 않는다.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AccountInfo {
+    /// 이메일 또는 제공자 이름 목록
+    pub label: String,
+    /// 구독·플랜 (max, prolite …)
+    pub plan: Option<String>,
+    /// 인증 방식 (claude.ai, chatgpt, Google OAuth, api …)
+    pub method: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AvailabilitySnapshot {
     pub cli: CliId,
@@ -52,6 +63,9 @@ pub struct AvailabilitySnapshot {
     /// 레지스트리 사용 여부 (PRD 6장). 꺼진 CLI는 상태바·라우팅·probe에서 빠진다.
     #[serde(default = "default_true")]
     pub enabled: bool,
+    /// 로그인된 계정 요약. probe(Claude auth status, OpenCode auth list, Gemini 로컬 기록)나 교환(Codex account/read)에서 채운다.
+    #[serde(default)]
+    pub account: Option<AccountInfo>,
 }
 
 fn default_true() -> bool {
@@ -84,6 +98,7 @@ impl AvailabilitySnapshot {
             recovered_at: None,
             version: None,
             enabled: true,
+            account: None,
         }
     }
 
@@ -247,10 +262,12 @@ pub fn extract_retry_after_secs(text: &str) -> Option<i64> {
 /// probe 명령의 해석 결과 (어댑터가 만든다)
 #[derive(Debug, Clone, PartialEq)]
 pub enum ProbeOutcome {
-    /// 설치 확인. 로그인까지 확인됐으면 CliReported, 버전만 확인됐으면 Estimated
+    /// 설치 확인. 로그인까지 확인됐으면 CliReported, 버전만 확인됐으면 Estimated.
+    /// account는 probe 출력에서 계정을 알 수 있을 때만 (없으면 기존 값 유지)
     Ready {
         evidence: Evidence,
         version: Option<String>,
+        account: Option<AccountInfo>,
     },
     AuthRequired {
         detail: String,
@@ -286,6 +303,13 @@ impl AvailabilityMonitor {
             .copied()
             .filter(|c| self.map.get(c).map_or(false, |s| s.enabled))
             .collect()
+    }
+
+    /// 교환(Codex app-server account/read 등)에서 알아낸 계정 정보 반영
+    pub fn set_account(&mut self, cli: CliId, account: AccountInfo) {
+        if let Some(s) = self.map.get_mut(&cli) {
+            s.account = Some(account);
+        }
     }
 
     /// 레지스트리 사용 여부 갱신. 목록에 없는 CLI는 끈다.
@@ -390,9 +414,16 @@ impl AvailabilityMonitor {
         s.checked_at = now;
         s.next_check_at = Some(now + PROBE_INTERVAL_SECS);
         match outcome {
-            ProbeOutcome::Ready { evidence, version } => {
+            ProbeOutcome::Ready {
+                evidence,
+                version,
+                account,
+            } => {
                 if version.is_some() {
                     s.version = version;
+                }
+                if account.is_some() {
+                    s.account = account;
                 }
                 if s.state == AvailabilityState::Cooldown && !s.all_windows_reset(now) {
                     // 한도 중(공식이든 추정이든): 설치·로그인 probe 성공은 한도 해제의 근거가 아니다
@@ -412,6 +443,7 @@ impl AvailabilityMonitor {
                 s.state = AvailabilityState::AuthRequired;
                 s.evidence = Evidence::CliReported;
                 s.last_error = Some(detail);
+                s.account = None;
             }
             ProbeOutcome::Unavailable { detail } => {
                 s.state = AvailabilityState::Unavailable;
@@ -615,6 +647,7 @@ mod tests {
             ProbeOutcome::Ready {
                 evidence: Evidence::Estimated,
                 version: Some("0.54.4".into()),
+                account: None,
             },
             T0,
         );
@@ -634,6 +667,7 @@ mod tests {
             ProbeOutcome::Ready {
                 evidence: Evidence::CliReported,
                 version: None,
+                account: None,
             },
             T0 + 10,
         );

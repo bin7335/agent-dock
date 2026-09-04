@@ -1,7 +1,7 @@
 use serde_json::Value;
 
 use super::{model_opt, probe_detail, AgentEvent, CliAdapter, LoginFlow, ModelListing};
-use crate::availability::{Evidence, ProbeOutcome};
+use crate::availability::{AccountInfo, Evidence, ProbeOutcome};
 use crate::models::{CliId, CommandSpec, Job, ModelOption};
 
 /// Claude Code 어댑터.
@@ -265,10 +265,20 @@ impl CliAdapter for ClaudeAdapter {
 
     fn interpret_probe(&self, code: Option<i32>, stdout: &str, stderr: &str) -> ProbeOutcome {
         if let Ok(v) = serde_json::from_str::<Value>(stdout.trim()) {
+            let text = |k: &str| v.get(k).and_then(Value::as_str).map(String::from);
+            // email·orgName·subscriptionType·authMethod (2.1.259 실측 키)
+            let account = text("email")
+                .or_else(|| text("orgName"))
+                .map(|label| AccountInfo {
+                    label,
+                    plan: text("subscriptionType"),
+                    method: text("authMethod"),
+                });
             return match v.get("loggedIn").and_then(Value::as_bool) {
                 Some(true) => ProbeOutcome::Ready {
                     evidence: Evidence::CliReported,
                     version: None,
+                    account,
                 },
                 Some(false) => ProbeOutcome::AuthRequired {
                     detail: "claude auth status: loggedIn=false".into(),
@@ -276,6 +286,7 @@ impl CliAdapter for ClaudeAdapter {
                 None => ProbeOutcome::Ready {
                     evidence: Evidence::Estimated,
                     version: None,
+                    account,
                 },
             };
         }
@@ -342,14 +353,19 @@ mod tests {
     fn probe_json_is_interpreted() {
         let ok = ClaudeAdapter.interpret_probe(
             Some(0),
-            "{\"loggedIn\": true, \"subscriptionType\": \"max\"}",
+            "{\"loggedIn\": true, \"subscriptionType\": \"max\", \"email\": \"me@example.com\", \"authMethod\": \"claude.ai\"}",
             "",
         );
         assert_eq!(
             ok,
             ProbeOutcome::Ready {
                 evidence: Evidence::CliReported,
-                version: None
+                version: None,
+                account: Some(AccountInfo {
+                    label: "me@example.com".into(),
+                    plan: Some("max".into()),
+                    method: Some("claude.ai".into()),
+                }),
             }
         );
         let no = ClaudeAdapter.interpret_probe(Some(0), "{\"loggedIn\": false}", "");

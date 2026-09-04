@@ -5,7 +5,7 @@ pub mod opencode;
 
 use serde_json::Value;
 
-use crate::availability::{Evidence, ProbeOutcome, RateLimitReading};
+use crate::availability::{AccountInfo, Evidence, ProbeOutcome, RateLimitReading};
 use crate::models::{CliId, CommandSpec, Job, ModelOption};
 
 /// CLI별 스트림에서 파싱된 공통 이벤트.
@@ -99,6 +99,11 @@ pub trait CliAdapter: Send + Sync {
         Vec::new()
     }
 
+    /// rate_limit_exchange 응답 줄들에서 계정 정보 추출 (Codex `account/read` 등). 없으면 None.
+    fn parse_account(&self, _lines: &[String]) -> Option<AccountInfo> {
+        None
+    }
+
     /// 앱에서 띄울 로그인 흐름. None이면 앱 밖에서 로그인해야 한다.
     fn login_flow(&self) -> Option<LoginFlow> {
         None
@@ -126,6 +131,7 @@ pub trait CliAdapter: Send + Sync {
             Some(0) => ProbeOutcome::Ready {
                 evidence: Evidence::Estimated,
                 version: first_line(stdout),
+                account: None,
             },
             _ => ProbeOutcome::Unavailable {
                 detail: probe_detail(code, stdout, stderr),

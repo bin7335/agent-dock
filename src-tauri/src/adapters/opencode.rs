@@ -1,8 +1,45 @@
 use serde_json::Value;
 
 use super::{probe_detail, strip_ansi, AgentEvent, CliAdapter, LoginFlow, ModelListing};
-use crate::availability::{Evidence, ProbeOutcome};
+use crate::availability::{AccountInfo, Evidence, ProbeOutcome};
 use crate::models::{CliId, CommandSpec, Job, ModelOption};
+
+/// `opencode auth list`의 "●  OpenCode Zen api" 줄들 → 제공자 목록 (이메일은 주지 않는다)
+fn providers_from_auth_list(text: &str) -> Option<AccountInfo> {
+    let mut names = Vec::new();
+    let mut methods = Vec::new();
+    for line in text.lines() {
+        let line = line.trim();
+        let Some(rest) = line.strip_prefix('●') else {
+            continue;
+        };
+        let rest = rest.trim();
+        let (name, method) = match rest.rsplit_once(' ') {
+            Some((n, m)) if ["api", "oauth", "key"].contains(&m) => (n.trim(), Some(m)),
+            _ => (rest, None),
+        };
+        if !name.is_empty() {
+            names.push(name.to_string());
+        }
+        if let Some(m) = method {
+            if !methods.contains(&m.to_string()) {
+                methods.push(m.to_string());
+            }
+        }
+    }
+    if names.is_empty() {
+        return None;
+    }
+    Some(AccountInfo {
+        label: names.join(", "),
+        plan: None,
+        method: if methods.is_empty() {
+            None
+        } else {
+            Some(methods.join("/"))
+        },
+    })
+}
 
 /// OpenCode 어댑터 (1.18.5 실측, 2026-09-04).
 /// - 실행: `opencode run --format json --dir <폴더> [--agent plan|build] [--auto] [-m provider/model] <프롬프트>`
@@ -186,10 +223,12 @@ impl CliAdapter for OpenCodeAdapter {
             (Some(0), Some(_)) => ProbeOutcome::Ready {
                 evidence: Evidence::CliReported,
                 version: None,
+                account: providers_from_auth_list(&text),
             },
             (Some(0), None) => ProbeOutcome::Ready {
                 evidence: Evidence::Estimated,
                 version: None,
+                account: None,
             },
             _ => ProbeOutcome::Unavailable {
                 detail: probe_detail(code, stdout, stderr),
@@ -245,11 +284,18 @@ mod tests {
         assert!(spec.args.iter().any(|a| a == "--auto"));
         assert!(spec.args.windows(2).any(|w| w == ["--session", "ses_9"]));
 
-        let listed = "\u{1b}[90m┌\u{1b}[39m  Credentials\n\u{1b}[34m●\u{1b}[39m  OpenCode Zen api\n\u{1b}[90m└\u{1b}[39m  2 credentials\n";
-        assert!(matches!(
-            OpenCodeAdapter.interpret_probe(Some(0), listed, ""),
-            ProbeOutcome::Ready { evidence: Evidence::CliReported, .. }
-        ));
+        let listed = "\u{1b}[90m┌\u{1b}[39m  Credentials\n\u{1b}[34m●\u{1b}[39m  OpenCode Zen \u{1b}[90mapi\u{1b}[39m\n\u{1b}[34m●\u{1b}[39m  OpenCode Go api\n\u{1b}[90m└\u{1b}[39m  2 credentials\n";
+        match OpenCodeAdapter.interpret_probe(Some(0), listed, "") {
+            ProbeOutcome::Ready {
+                evidence: Evidence::CliReported,
+                account: Some(acc),
+                ..
+            } => {
+                assert_eq!(acc.label, "OpenCode Zen, OpenCode Go");
+                assert_eq!(acc.method.as_deref(), Some("api"));
+            }
+            other => panic!("예상 밖: {other:?}"),
+        }
         assert!(matches!(
             OpenCodeAdapter.interpret_probe(Some(0), "0 credentials", ""),
             ProbeOutcome::AuthRequired { .. }

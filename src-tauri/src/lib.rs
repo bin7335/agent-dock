@@ -177,9 +177,13 @@ async fn run_probes(app: &AppHandle, monitor: &Mutex<AvailabilityMonitor>, clis:
                     runner::exchange_lines(&ex.spec, &ex.inputs, done, PROBE_TIMEOUT).await
                 {
                     let readings = adapter.parse_rate_limits(&lines);
+                    let account = adapter.parse_account(&lines);
                     if let Ok(mut m) = monitor.lock() {
                         for r in &readings {
                             m.apply_rate_limit(*cli, &r.window, r.utilization, r.resets_at, now());
+                        }
+                        if let Some(acc) = account {
+                            m.set_account(*cli, acc);
                         }
                     }
                 }

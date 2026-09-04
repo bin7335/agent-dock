@@ -33,6 +33,15 @@ export interface AvailabilitySnapshot {
   version: string | null;
   /** 레지스트리 사용 여부. 꺼진 CLI는 상단·상태바·라우팅에서 빠진다 */
   enabled: boolean;
+  /** 로그인된 계정 요약 (토큰 없음) */
+  account: AccountInfo | null;
+}
+
+/** Rust availability::AccountInfo */
+export interface AccountInfo {
+  label: string;
+  plan: string | null;
+  method: string | null;
 }
 
 /** Rust models::ModelOption — CLI별 모델 선택지 */
