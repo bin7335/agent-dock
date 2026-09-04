@@ -49,6 +49,13 @@ pub struct AvailabilitySnapshot {
     /// 리셋 시각 경과로 복귀한 시각. 복귀 직후 재발 판정에 쓴다 (PRD 10장)
     pub recovered_at: Option<i64>,
     pub version: Option<String>,
+    /// 레지스트리 사용 여부 (PRD 6장). 꺼진 CLI는 상태바·라우팅·probe에서 빠진다.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 /// 고사용량(임박) 임계치. 선제 handoff 임계치와 같은 값 (PRD 6장)
@@ -76,6 +83,7 @@ impl AvailabilitySnapshot {
             next_check_at: Some(now),
             recovered_at: None,
             version: None,
+            enabled: true,
         }
     }
 
@@ -271,8 +279,20 @@ impl AvailabilityMonitor {
         }
     }
 
+    /// probe·라우팅 대상 = 활성 CLI (순서 유지)
     pub fn clis(&self) -> Vec<CliId> {
-        self.order.clone()
+        self.order
+            .iter()
+            .copied()
+            .filter(|c| self.map.get(c).map_or(false, |s| s.enabled))
+            .collect()
+    }
+
+    /// 레지스트리 사용 여부 갱신. 목록에 없는 CLI는 끈다.
+    pub fn set_enabled(&mut self, enabled: &[CliId]) {
+        for (cli, s) in self.map.iter_mut() {
+            s.enabled = enabled.contains(cli);
+        }
     }
 
     /// 저장된 스냅샷 복원(앱 재시작). Claude처럼 실행 스트림에서만 오는 공식 사용률을 잃지 않기 위한 것.
@@ -473,6 +493,9 @@ impl AvailabilityMonitor {
             let Some(s) = self.map.get_mut(cli) else {
                 continue;
             };
+            if !s.enabled {
+                continue;
+            }
             if s.state == AvailabilityState::Cooldown {
                 if s.all_windows_reset(now) {
                     // 모든 윈도우 리셋 → 복귀. 공식 확인 전이므로 추정 상태로 표시하고 즉시 probe
@@ -731,6 +754,21 @@ mod tests {
         let mut m3 = monitor();
         m3.import(cd.snapshots(), T0 + 60);
         assert_eq!(m3.get(CliId::Codex).unwrap().state, AvailabilityState::Cooldown);
+    }
+
+    #[test]
+    fn disabled_clis_are_skipped() {
+        let mut m = monitor();
+        m.set_enabled(&[CliId::Claude]);
+        assert_eq!(m.clis(), vec![CliId::Claude]);
+        assert_eq!(m.snapshots().len(), 3, "스냅샷 목록은 비활성도 포함(enabled 플래그)");
+        assert_eq!(m.tick(T0 + 1), vec![CliId::Claude], "틱 재검사 대상은 활성만");
+        assert!(!m.snapshots()[0].enabled);
+
+        // 저장·복원을 거쳐도 사용 여부가 유지된다
+        let mut m2 = monitor();
+        m2.import(m.snapshots(), T0 + 2);
+        assert_eq!(m2.clis(), vec![CliId::Claude]);
     }
 
     #[test]

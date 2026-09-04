@@ -29,7 +29,13 @@ pub fn pick_candidate(
     profile: &RoutingProfile,
     snapshots: &[AvailabilitySnapshot],
 ) -> Option<CliId> {
-    let state_of = |cli: CliId| snapshots.iter().find(|s| s.cli == cli).map(|s| s.state);
+    // 레지스트리에서 꺼진 CLI는 후보가 아니다
+    let state_of = |cli: CliId| {
+        snapshots
+            .iter()
+            .find(|s| s.cli == cli && s.enabled)
+            .map(|s| s.state)
+    };
     profile
         .chain
         .iter()

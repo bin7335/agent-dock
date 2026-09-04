@@ -14,12 +14,15 @@ PRD·설계 근거·스파이크 실측·구현 현황의 원본은 위키 `wiki
    ```
    (옛 셸에 `C:\Users\User\.cargo\bin` PATH가 남아 있으면 `$env:PATH = "D:\tools\cargo\bin;$env:PATH"`)
 3. 검증: `npx tsc --noEmit` (프론트), `cd src-tauri; cargo test` (22개, 경고 0). 실제 claude를 태우는 통합 테스트는 `cargo test real_claude -- --ignored --nocapture`.
-4. git: `main`, 커밋 5개 (기준선 `da632ec` → 가용성 모니터 `2e992b0` → HANDOFF → Codex 사용량 `dfc1d11` → 드래그 우선순위). `core.autocrlf=false`. 원격 없음 — 올린다면 private.
+4. git: `main`, 커밋 9개 (기준선 `da632ec` → 가용성 모니터 `2e992b0` → HANDOFF → Codex 사용량 `dfc1d11` → 드래그 우선순위). `core.autocrlf=false`. 원격 없음 — 올린다면 private.
 
 ## 현재 상태 (2026-09-04, E2E 통과)
 
 - 백엔드(`src-tauri/src`): `models` · `availability`(CLI별 스냅샷 상태 머신 + 오류 분류) · `scheduler`(`pick_candidate` 배선) · `db`(스키마만, 미배선) · `adapters/{claude,codex,gemini}`(명령 조립·이벤트 파싱·probe 해석) · `runner`(tokio 실행, stdin 전달, 중지 플래그, `run_capture` 타임아웃, PATH에서 .exe/.cmd 해석)
-- Tauri 커맨드: `start_job` · `continue_job` · `cancel_run` · `get_availability` · `recheck_availability` · `pick_cli`. 이벤트: `agent-event`(`{run_id, cli, event}`), `availability-changed`(스냅샷 배열)
+- Tauri 커맨드: `start_job`/`continue_job`(model 인자 포함) · `cancel_run` · `get_availability` · `recheck_availability` · `pick_cli` · `set_routing_chain` · `set_enabled_clis` · `list_models` · `login_cli`. 이벤트: `agent-event`(`{run_id, cli, event}`), `availability-changed`(스냅샷 배열, `enabled` 플래그 포함)
+- 어댑터 4종: codex · claude · gemini · **opencode**(1.18.5 실측: `run --format json --dir … --agent plan|build [--auto] [-m provider/model]`, 이벤트 `text`/`step_finish`, `--session` 재개, probe `auth list`의 "N credentials"). 어댑터 계약에 `login_flow`(Console=콘솔 창에서 CLI 로그인 명령, Exchange=ACP authenticate) · `model_listing`(Static/Exchange/Command) · `parse_models` 추가
+- CLI 레지스트리 패널(⚙ CLI 설정): 사용 여부(끄면 상태바·라우팅·probe 제외, localStorage `agentdock.enabled`), 로그인 버튼, 모델 선택(localStorage `agentdock.model.<cli>`, 툴바에도 현재 CLI용 선택). 모델 목록: Claude 정적 별칭(fable/opus/sonnet/haiku), Codex app-server `model/list`(limit 필요), Gemini ACP `session/new`의 availableModels, OpenCode `opencode models`
+- 로그인 흐름: Claude `claude auth login`·Codex `codex login`·OpenCode `opencode auth login`은 앱 데이터 폴더에 `login-<cli>.cmd`를 만들어 `cmd /c start "" /wait`로 새 콘솔 창에서 실행하고 창이 닫히면 재검사(상한 10분). Gemini는 ACP `authenticate{methodId:oauth-personal}`. **로그인 흐름 실사용 E2E는 아직 미수행**(계정이 이미 로그인 상태라 미검증)
 - 가용성 모니터(`lib.rs` setup): 시작 시 전체 probe → 30초 틱. probe = claude `auth status`(JSON `loggedIn`) / codex `login status` / gemini `--version`. 실행 스트림의 `rate_limit_event`(공식)와 실패 원문(한도·인증·네트워크 분류, 리셋 epoch 힌트 추출)을 반영. 주기 probe 10분, 추정 쿨다운 30분, 리셋 직후 10분 내 재발 시 6시간 장기 쿨다운, 모든 윈도우 리셋 시에만 복귀
 - 프로세스 실행: Windows에서 PATH를 뒤져 실제 파일 경로(.exe → .cmd → .bat)로 실행. .cmd는 Rust std가 cmd.exe 경유 + 안전 이스케이프를 맡는다(CVE-2024-24576 대응). 줄바꿈 인자는 그 단계에서 거부되므로 Claude 프롬프트는 stdin으로 넘긴다(실측: `echo … | claude -p` 정상)
 - Codex 공식 사용량: `codex app-server`(stdio JSON-RPC)에 `initialize` → `initialized` → `account/rateLimits/read` 3줄을 일괄 전송(`runner::exchange_lines`, 1.2초). 응답 `rateLimits.primary/secondary{usedPercent, windowDurationMins, resetsAt}`를 five_hour/seven_day 이름으로 정규화해 `apply_rate_limit` → 상태바 "46% · 리셋 ↻ · 공식". `rateLimitReachedType`이 있으면 100%로. probe가 Ready인 CLI만 읽는다
@@ -39,6 +42,8 @@ PRD·설계 근거·스파이크 실측·구현 현황의 원본은 위키 `wiki
 - Codex 모델별 한도(`rateLimitsByLimitId`, 5시간·7일 윈도우)는 아직 표시하지 않고 계정 단위 `rateLimits`만 쓴다
 - 라우팅 체인은 localStorage에만 저장(SQLite 배선 전). 폴더 잠금(`Runner::running_count`)도 미배선
 - 폴더당 동시 1개 잠금(`Runner::running_count`)·SQLite 영속화 미배선
+- OpenCode 실행 E2E(앱 안에서 대화·재개)와 각 CLI 로그인 버튼 E2E 미수행. Gemini ACP authenticate가 브라우저를 여는지도 미확인
+- OpenCode 프롬프트도 인자 전달(줄바꿈 불가). `--agent plan`이 읽기 전용 내장 에이전트라는 전제
 - E2E 자동화 메모: DPI 비인식 프로세스의 `CopyFromScreen`은 125% 모니터에서 캡처가 잘린다(`SetProcessDPIAware` 선행). PowerShell 변수는 대소문자를 구분하지 않아 `$h`/`$H`가 충돌한다. 한글 IME 상태의 `SendKeys`는 자모로 입력되므로 `Set-Clipboard` + `^v`로 붙여넣는다
 
 ## 다음 단계 (PRD 14장 "구현 현황"과 동일)

@@ -10,41 +10,22 @@ mod scheduler;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use adapters::{AgentEvent, CliAdapter};
+use adapters::{line_has_id, AgentEvent, CliAdapter, LoginFlow, ModelListing};
 use availability::{AvailabilityMonitor, AvailabilitySnapshot, FailureKind, ProbeOutcome};
-use models::{CliId, CommandSpec, Job, JobStatus};
+use models::{CliId, CommandSpec, Job, JobStatus, ModelOption};
 use scheduler::RoutingProfile;
 use tauri::{AppHandle, Emitter, Manager};
 
 /// probe 명령(version·login status) 상한. 넘기면 죽이고 unavailable로 본다.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(20);
-/// 마지막 가용성 스냅샷 보존 파일 (앱 데이터 폴더). 재시작 후 Claude의 공식 사용률을 잃지 않기 위해.
-const STORE_FILE: &str = "availability.json";
-
-fn store_path(app: &AppHandle) -> Option<std::path::PathBuf> {
-    app.path().app_data_dir().ok().map(|d| d.join(STORE_FILE))
-}
-
-fn save_store(app: &AppHandle, snaps: &[AvailabilitySnapshot]) {
-    let Some(path) = store_path(app) else {
-        return;
-    };
-    if let Some(dir) = path.parent() {
-        let _ = std::fs::create_dir_all(dir);
-    }
-    if let Ok(json) = serde_json::to_string_pretty(snaps) {
-        let _ = std::fs::write(path, json);
-    }
-}
-
-fn load_store(app: &AppHandle) -> Vec<AvailabilitySnapshot> {
-    store_path(app)
-        .and_then(|p| std::fs::read_to_string(p).ok())
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default()
-}
+/// 모델 목록 조회 상한 (app-server·ACP 기동 포함)
+const MODEL_LIST_TIMEOUT: Duration = Duration::from_secs(30);
+/// 로그인 흐름 상한 — 브라우저 로그인을 기다린다
+const LOGIN_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 /// 모니터 틱 간격. 틱마다 쿨다운 만료·재검사 예정만 확인하므로 가볍다.
 const TICK_INTERVAL: Duration = Duration::from_secs(30);
+/// 마지막 가용성 스냅샷 보존 파일 (앱 데이터 폴더). 재시작 후 Claude의 공식 사용률을 잃지 않기 위해.
+const STORE_FILE: &str = "availability.json";
 
 struct AppState {
     runner: Arc<runner::Runner>,
@@ -76,7 +57,12 @@ fn adapter_for(cli: CliId) -> Result<Arc<dyn CliAdapter>, String> {
         .ok_or_else(|| "등록되지 않은 CLI".to_string())
 }
 
-fn make_job(request: String, project_dir: String, allow_writes: bool) -> Job {
+fn make_job(
+    request: String,
+    project_dir: String,
+    allow_writes: bool,
+    model: Option<String>,
+) -> Job {
     Job {
         id: 0,
         title: request.chars().take(40).collect(),
@@ -86,7 +72,30 @@ fn make_job(request: String, project_dir: String, allow_writes: bool) -> Job {
         allow_writes,
         unattended_ok: false,
         status: JobStatus::Starting,
+        model: model.filter(|m| !m.trim().is_empty()),
     }
+}
+
+fn app_data_dir(app: &AppHandle) -> Option<std::path::PathBuf> {
+    let dir = app.path().app_data_dir().ok()?;
+    let _ = std::fs::create_dir_all(&dir);
+    Some(dir)
+}
+
+fn save_store(app: &AppHandle, snaps: &[AvailabilitySnapshot]) {
+    let Some(path) = app_data_dir(app).map(|d| d.join(STORE_FILE)) else {
+        return;
+    };
+    if let Ok(json) = serde_json::to_string_pretty(snaps) {
+        let _ = std::fs::write(path, json);
+    }
+}
+
+fn load_store(app: &AppHandle) -> Vec<AvailabilitySnapshot> {
+    app_data_dir(app)
+        .and_then(|d| std::fs::read_to_string(d.join(STORE_FILE)).ok())
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
 }
 
 fn snapshots_of(monitor: &Mutex<AvailabilityMonitor>) -> Vec<AvailabilitySnapshot> {
@@ -163,12 +172,7 @@ async fn run_probes(app: &AppHandle, monitor: &Mutex<AvailabilityMonitor>, clis:
         if ready {
             if let Some(ex) = adapter.rate_limit_exchange() {
                 let done_id = ex.done_id;
-                let done = move |line: &str| {
-                    serde_json::from_str::<serde_json::Value>(line)
-                        .ok()
-                        .and_then(|v| v.get("id").and_then(|i| i.as_u64()))
-                        == Some(done_id)
-                };
+                let done = move |line: &str| line_has_id(line, done_id);
                 if let Ok(lines) =
                     runner::exchange_lines(&ex.spec, &ex.inputs, done, PROBE_TIMEOUT).await
                 {
@@ -213,9 +217,10 @@ async fn start_job(
     request: String,
     project_dir: String,
     allow_writes: bool,
+    model: Option<String>,
 ) -> Result<u64, String> {
     let adapter = adapter_for(cli)?;
-    let spec = adapter.build_command(&make_job(request, project_dir, allow_writes));
+    let spec = adapter.build_command(&make_job(request, project_dir, allow_writes, model));
     spawn_run(app, state.inner(), cli, adapter, spec).await
 }
 
@@ -229,10 +234,14 @@ async fn continue_job(
     request: String,
     project_dir: String,
     allow_writes: bool,
+    model: Option<String>,
 ) -> Result<u64, String> {
     let adapter = adapter_for(cli)?;
     let spec = adapter
-        .build_resume_command(&make_job(request, project_dir, allow_writes), &session_id)
+        .build_resume_command(
+            &make_job(request, project_dir, allow_writes, model),
+            &session_id,
+        )
         .ok_or_else(|| "이 CLI는 세션 재개를 지원하지 않습니다".to_string())?;
     spawn_run(app, state.inner(), cli, adapter, spec).await
 }
@@ -243,13 +252,13 @@ async fn cancel_run(state: tauri::State<'_, AppState>, run_id: u64) -> Result<bo
     Ok(state.runner.cancel(run_id).await)
 }
 
-/// 현재 가용성 스냅샷 (라우팅 순서). 앱 시작 직후 프론트가 한 번 읽고 이후는 이벤트로 받는다.
+/// 현재 가용성 스냅샷 (라우팅 순서, 비활성 CLI 포함 — enabled 플래그로 구분).
 #[tauri::command]
 fn get_availability(state: tauri::State<'_, AppState>) -> Vec<AvailabilitySnapshot> {
     snapshots_of(&state.monitor)
 }
 
-/// 수동 재검사 (상태바 클릭 패널의 버튼, PRD 7장). cli를 생략하면 전부.
+/// 수동 재검사 (상태바 클릭 패널의 버튼, PRD 7장). cli를 생략하면 활성 CLI 전부.
 #[tauri::command]
 async fn recheck_availability(
     app: AppHandle,
@@ -305,11 +314,163 @@ fn set_routing_chain(
     Ok(snapshots_of(&state.monitor))
 }
 
+/// CLI 레지스트리의 사용 여부 (PRD 6장). 비활성 CLI는 상태바·라우팅·probe에서 빠진다. 새로 켠 CLI는 바로 probe.
+#[tauri::command]
+async fn set_enabled_clis(
+    app: AppHandle,
+    state: tauri::State<'_, AppState>,
+    enabled: Vec<CliId>,
+) -> Result<Vec<AvailabilitySnapshot>, String> {
+    if enabled.is_empty() {
+        return Err("최소 한 개의 CLI는 켜 두어야 합니다".into());
+    }
+    let monitor = Arc::clone(&state.monitor);
+    let newly: Vec<CliId> = {
+        let Ok(mut m) = monitor.lock() else {
+            return Err("모니터 잠금 실패".into());
+        };
+        let before = m.clis();
+        m.set_enabled(&enabled);
+        m.clis().into_iter().filter(|c| !before.contains(c)).collect()
+    };
+    emit_availability(&app, &monitor);
+    if !newly.is_empty() {
+        run_probes(&app, &monitor, &newly).await;
+    }
+    Ok(snapshots_of(&monitor))
+}
+
+/// CLI별 모델 선택지. Claude는 정적 별칭, Codex는 app-server, Gemini는 ACP, OpenCode는 `opencode models`.
+#[tauri::command]
+async fn list_models(cli: CliId) -> Result<Vec<ModelOption>, String> {
+    let adapter = adapter_for(cli)?;
+    match adapter.model_listing() {
+        ModelListing::Static(list) => Ok(list),
+        ModelListing::Exchange(ex) => {
+            let done_id = ex.done_id;
+            let lines = runner::exchange_lines(
+                &ex.spec,
+                &ex.inputs,
+                move |line| line_has_id(line, done_id),
+                MODEL_LIST_TIMEOUT,
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+            Ok(adapter.parse_models(&lines))
+        }
+        ModelListing::Command(spec) => {
+            let out = runner::run_capture(&spec, MODEL_LIST_TIMEOUT)
+                .await
+                .map_err(|e| e.to_string())?;
+            if out.timed_out {
+                return Err("모델 목록 조회 시간 초과".into());
+            }
+            let lines: Vec<String> = out.stdout.lines().map(String::from).collect();
+            Ok(adapter.parse_models(&lines))
+        }
+    }
+}
+
+/// 콘솔형 로그인은 배치 파일을 만들어 새 콘솔 창에서 실행한다 (한글은 콘솔 코드 페이지 문제로 영문만 사용).
+fn write_login_script(
+    app: &AppHandle,
+    cli: CliId,
+    spec: &CommandSpec,
+) -> Result<std::path::PathBuf, String> {
+    let dir = app_data_dir(app).ok_or("앱 데이터 폴더를 찾을 수 없습니다")?;
+    let path = dir.join(format!("login-{}.cmd", cli.label().to_ascii_lowercase()));
+    let args: Vec<String> = spec
+        .args
+        .iter()
+        .map(|a| {
+            if a.contains(' ') {
+                format!("\"{a}\"")
+            } else {
+                a.clone()
+            }
+        })
+        .collect();
+    let script = format!(
+        "@echo off\r\ntitle Agent Dock - {label} login\r\necho [Agent Dock] Starting {label} login. Follow the instructions below (a browser may open).\r\necho.\r\n{program} {args}\r\necho.\r\necho Done. Press any key to close this window; Agent Dock will re-check the status.\r\npause >nul\r\n",
+        label = cli.label(),
+        program = spec.program,
+        args = args.join(" ")
+    );
+    std::fs::write(&path, script).map_err(|e| e.to_string())?;
+    Ok(path)
+}
+
+/// 앱에서 CLI 로그인 흐름을 띄운다 (PRD 6장: 기존 CLI 로그인 방식 그대로). 끝나면 해당 CLI를 재검사한다.
+#[tauri::command]
+async fn login_cli(
+    app: AppHandle,
+    state: tauri::State<'_, AppState>,
+    cli: CliId,
+) -> Result<String, String> {
+    let adapter = adapter_for(cli)?;
+    let flow = adapter
+        .login_flow()
+        .ok_or_else(|| "이 CLI는 앱에서 로그인을 지원하지 않습니다".to_string())?;
+    let message = match flow {
+        LoginFlow::Console { spec, hint } => {
+            let script = write_login_script(&app, cli, &spec)?;
+            let launcher = CommandSpec {
+                program: "cmd".into(),
+                args: vec![
+                    "/c".into(),
+                    "start".into(),
+                    "".into(),
+                    "/wait".into(),
+                    script.to_string_lossy().into_owned(),
+                ],
+                env: spec.env.clone(),
+                cwd: String::new(),
+                stdin: None,
+            };
+            let out = runner::run_capture(&launcher, LOGIN_TIMEOUT)
+                .await
+                .map_err(|e| format!("로그인 창 실행 실패: {e}"))?;
+            if out.timed_out {
+                format!("{hint} 로그인 창이 아직 열려 있습니다. 끝나면 재검사를 눌러 주세요.")
+            } else {
+                "로그인 창이 닫혔습니다. 상태를 다시 확인했습니다.".to_string()
+            }
+        }
+        LoginFlow::Exchange { exchange, hint } => {
+            let done_id = exchange.done_id;
+            let lines = runner::exchange_lines(
+                &exchange.spec,
+                &exchange.inputs,
+                move |line| line_has_id(line, done_id),
+                LOGIN_TIMEOUT,
+            )
+            .await
+            .map_err(|e| format!("로그인 실행 실패: {e}"))?;
+            let reply = lines.iter().find(|l| line_has_id(l, done_id));
+            match reply.and_then(|l| serde_json::from_str::<serde_json::Value>(l).ok()) {
+                Some(v) if v.get("error").is_some() => {
+                    return Err(format!(
+                        "로그인 실패: {} ({hint})",
+                        v.pointer("/error/message")
+                            .and_then(|m| m.as_str())
+                            .unwrap_or("알 수 없는 오류")
+                    ));
+                }
+                Some(_) => "로그인이 완료됐습니다. 상태를 다시 확인했습니다.".to_string(),
+                None => format!("응답이 없었습니다. {hint}"),
+            }
+        }
+    };
+    let monitor = Arc::clone(&state.monitor);
+    run_probes(&app, &monitor, &[cli]).await;
+    Ok(message)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let profile = RoutingProfile::default();
     let registered: Vec<CliId> = adapters::registry().iter().map(|a| a.id()).collect();
-    // 상태바 순서는 라우팅 프로필 순서를 따른다 (PRD 7장). 어댑터가 없는 후보(opencode)는 제외
+    // 상태바 순서는 라우팅 프로필 순서를 따른다 (PRD 7장). 어댑터가 없는 후보는 제외
     let ordered: Vec<CliId> = profile
         .chain
         .iter()
@@ -328,13 +489,13 @@ pub fn run() {
         })
         .setup(move |app| {
             let handle = app.handle().clone();
-            // 이전 실행의 스냅샷 복원 (리셋이 지난 윈도우는 import에서 폐기)
+            // 이전 실행의 스냅샷 복원 (리셋이 지난 윈도우는 import에서 폐기, 사용 여부도 복원)
             let stored = load_store(&handle);
             if let Ok(mut m) = monitor.lock() {
                 m.import(stored, now());
             }
             emit_availability(&handle, &monitor);
-            // 가용성 모니터 루프: 시작 시 전체 probe → 30초마다 쿨다운 만료·재검사 예정 확인
+            // 가용성 모니터 루프: 시작 시 활성 CLI 전체 probe → 30초마다 쿨다운 만료·재검사 예정 확인
             tauri::async_runtime::spawn(async move {
                 let all = monitor.lock().map(|m| m.clis()).unwrap_or_default();
                 run_probes(&handle, &monitor, &all).await;
@@ -359,7 +520,10 @@ pub fn run() {
             get_availability,
             recheck_availability,
             pick_cli,
-            set_routing_chain
+            set_routing_chain,
+            set_enabled_clis,
+            list_models,
+            login_cli
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

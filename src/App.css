@@ -552,3 +552,87 @@ button.small {
 .cli-card.current .prio {
   color: #e4e6eb;
 }
+
+/* ── CLI 레지스트리 모달 (사용 여부·로그인·모델) ── */
+.settings-btn {
+  margin-left: auto;
+  align-self: center;
+}
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 20;
+}
+
+.modal {
+  width: min(960px, 94vw);
+  max-height: 88vh;
+  overflow: auto;
+  background: #1c1f26;
+  border: 1px solid #4a5160;
+  border-radius: 12px;
+  padding: 16px 18px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+}
+
+.registry {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 8px 0;
+}
+
+.registry th,
+.registry td {
+  text-align: left;
+  padding: 8px 10px;
+  border-bottom: 1px solid #2e323c;
+  vertical-align: top;
+}
+
+.registry th {
+  color: #9aa0ab;
+  font-weight: 600;
+  font-size: 12.5px;
+}
+
+.registry tr.disabled td {
+  opacity: 0.5;
+}
+
+.registry td.num {
+  text-align: center;
+  color: #9aa0ab;
+}
+
+.small-text {
+  font-size: 11.5px;
+  margin-top: 4px;
+  max-width: 260px;
+  white-space: pre-wrap;
+}
+
+.model-pick {
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
+}
+
+.model-pick select {
+  border: 1px solid #2e323c;
+  border-radius: 7px;
+  padding: 6px 8px;
+  font-size: 13px;
+  font-family: inherit;
+  color: #e4e6eb;
+  background: #14161b;
+  max-width: 260px;
+}
+
+.registry .model-pick select {
+  max-width: 340px;
+}

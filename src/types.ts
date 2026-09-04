@@ -31,6 +31,15 @@ export interface AvailabilitySnapshot {
   next_check_at: number | null;
   recovered_at: number | null;
   version: string | null;
+  /** 레지스트리 사용 여부. 꺼진 CLI는 상단·상태바·라우팅에서 빠진다 */
+  enabled: boolean;
+}
+
+/** Rust models::ModelOption — CLI별 모델 선택지 */
+export interface ModelOption {
+  id: string;
+  label: string;
+  is_default: boolean;
 }
 
 export type JobStatus =

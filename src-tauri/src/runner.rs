@@ -343,6 +343,7 @@ mod tests {
             allow_writes: false,
             unattended_ok: false,
             status: JobStatus::Starting,
+            model: None,
         };
         let adapter = Arc::new(ClaudeAdapter);
         let spec = adapter.build_command(&job);

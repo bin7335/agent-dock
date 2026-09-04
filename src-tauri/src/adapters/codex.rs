@@ -1,18 +1,45 @@
 use serde_json::{json, Value};
 
-use super::{probe_detail, AgentEvent, CliAdapter, RateLimitExchange};
+use super::{
+    line_has_id, probe_detail, AgentEvent, CliAdapter, LineExchange, LoginFlow, ModelListing,
+};
 use crate::availability::{window_name_for_minutes, Evidence, ProbeOutcome, RateLimitReading};
-use crate::models::{CliId, CommandSpec, Job};
+use crate::models::{CliId, CommandSpec, Job, ModelOption};
 
 /// Codex 어댑터.
 /// 실측 근거: `codex exec --json` JSONL (스파이크 0, 2026-09-02).
 /// 사용량 %는 exec 스트림에 없고 `codex app-server`(stdio JSON-RPC)의 `account/rateLimits/read`로 읽는다
 /// (2026-09-04 실측: initialize → initialized → 요청, 응답 `result.rateLimits.primary{usedPercent,windowDurationMins,resetsAt}`).
+/// 모델 목록도 같은 채널의 `model/list`(params.limit 필요)로 읽는다. 로그인은 `codex login`(브라우저).
 /// 프롬프트는 아직 인자로 넘기므로 줄바꿈이 든 메시지는 실행 단계에서 거부된다 (TODO: stdin 전달 실측).
 pub struct CodexAdapter;
 
 const RL_INIT_ID: u64 = 1;
 const RL_READ_ID: u64 = 2;
+const MODEL_LIST_ID: u64 = 2;
+
+fn app_server_spec() -> CommandSpec {
+    CommandSpec {
+        program: "codex".into(),
+        args: vec!["app-server".into()],
+        env: vec![],
+        cwd: String::new(),
+        stdin: None,
+    }
+}
+
+fn app_server_inputs(request: Value) -> Vec<String> {
+    vec![
+        json!({
+            "id": RL_INIT_ID,
+            "method": "initialize",
+            "params": {"clientInfo": {"name": "agent-dock", "title": "Agent Dock", "version": env!("CARGO_PKG_VERSION")}}
+        })
+        .to_string(),
+        json!({"method": "initialized", "params": {}}).to_string(),
+        request.to_string(),
+    ]
+}
 
 impl CodexAdapter {
     fn common_args(job: &Job) -> Vec<String> {
@@ -21,7 +48,7 @@ impl CodexAdapter {
         } else {
             "read-only"
         };
-        vec![
+        let mut args = vec![
             "exec".into(),
             "--json".into(),
             "--skip-git-repo-check".into(),
@@ -29,7 +56,12 @@ impl CodexAdapter {
             sandbox.into(),
             "-C".into(),
             job.project_dir.clone(),
-        ]
+        ];
+        if let Some(m) = job.model.as_deref().filter(|m| !m.is_empty()) {
+            args.push("-m".into());
+            args.push(m.to_string());
+        }
+        args
     }
 }
 
@@ -146,25 +178,12 @@ impl CliAdapter for CodexAdapter {
         })
     }
 
-    fn rate_limit_exchange(&self) -> Option<RateLimitExchange> {
-        Some(RateLimitExchange {
-            spec: CommandSpec {
-                program: "codex".into(),
-                args: vec!["app-server".into()],
-                env: vec![],
-                cwd: String::new(),
-                stdin: None,
-            },
-            inputs: vec![
-                json!({
-                    "id": RL_INIT_ID,
-                    "method": "initialize",
-                    "params": {"clientInfo": {"name": "agent-dock", "title": "Agent Dock", "version": env!("CARGO_PKG_VERSION")}}
-                })
-                .to_string(),
-                json!({"method": "initialized", "params": {}}).to_string(),
-                json!({"id": RL_READ_ID, "method": "account/rateLimits/read", "params": {}}).to_string(),
-            ],
+    fn rate_limit_exchange(&self) -> Option<LineExchange> {
+        Some(LineExchange {
+            spec: app_server_spec(),
+            inputs: app_server_inputs(
+                json!({"id": RL_READ_ID, "method": "account/rateLimits/read", "params": {}}),
+            ),
             done_id: RL_READ_ID,
         })
     }
@@ -207,6 +226,62 @@ impl CliAdapter for CodexAdapter {
         vec![]
     }
 
+    fn login_flow(&self) -> Option<LoginFlow> {
+        Some(LoginFlow::Console {
+            spec: CommandSpec {
+                program: "codex".into(),
+                args: vec!["login".into()],
+                env: vec![],
+                cwd: String::new(),
+                stdin: None,
+            },
+            hint: "브라우저가 열리면 ChatGPT 계정으로 로그인하세요.".into(),
+        })
+    }
+
+    /// app-server `model/list`(2026-09-04 실측: params.limit 필요, `result.data[]{id, displayName, description, isDefault, hidden}`)
+    fn model_listing(&self) -> ModelListing {
+        ModelListing::Exchange(LineExchange {
+            spec: app_server_spec(),
+            inputs: app_server_inputs(
+                json!({"id": MODEL_LIST_ID, "method": "model/list", "params": {"limit": 100}}),
+            ),
+            done_id: MODEL_LIST_ID,
+        })
+    }
+
+    fn parse_models(&self, lines: &[String]) -> Vec<ModelOption> {
+        let Some(line) = lines.iter().find(|l| line_has_id(l, MODEL_LIST_ID)) else {
+            return vec![];
+        };
+        let Ok(v) = serde_json::from_str::<Value>(line) else {
+            return vec![];
+        };
+        v.pointer("/result/data")
+            .and_then(Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter(|m| !m.get("hidden").and_then(Value::as_bool).unwrap_or(false))
+                    .filter_map(|m| {
+                        let id = m.get("id").and_then(Value::as_str)?;
+                        let name = m.get("displayName").and_then(Value::as_str).unwrap_or(id);
+                        let desc = m.get("description").and_then(Value::as_str).unwrap_or("");
+                        Some(ModelOption {
+                            id: id.to_string(),
+                            label: if desc.is_empty() {
+                                name.to_string()
+                            } else {
+                                format!("{name} — {desc}")
+                            },
+                            is_default: m.get("isDefault").and_then(Value::as_bool).unwrap_or(false),
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     fn interpret_probe(&self, code: Option<i32>, stdout: &str, stderr: &str) -> ProbeOutcome {
         let text = format!("{stdout}\n{stderr}").to_ascii_lowercase();
         if text.contains("not logged in") {
@@ -234,6 +309,7 @@ impl CliAdapter for CodexAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::JobStatus;
 
     #[test]
     fn login_status_is_interpreted() {
@@ -287,5 +363,40 @@ mod tests {
         assert_eq!(ex.spec.args, vec!["app-server"]);
         assert_eq!(ex.inputs.len(), 3);
         assert!(ex.inputs[2].contains("account/rateLimits/read"));
+    }
+
+    /// 2026-09-04 실측 `model/list` 응답(요약)
+    #[test]
+    fn model_list_is_parsed_and_model_flag_applied() {
+        let lines = vec![
+            r#"{"id":1,"result":{"userAgent":"x"}}"#.to_string(),
+            r#"{"id":2,"result":{"data":[{"id":"gpt-5.6-sol","displayName":"GPT-5.6-Sol","description":"Reliable agentic workhorse.","hidden":false,"isDefault":true},{"id":"gpt-5.6-terra","displayName":"GPT-5.6-Terra","description":"Balanced.","hidden":false,"isDefault":false},{"id":"secret","displayName":"Hidden","hidden":true}]}}"#.to_string(),
+        ];
+        let models = CodexAdapter.parse_models(&lines);
+        assert_eq!(models.len(), 2);
+        assert_eq!(models[0].id, "gpt-5.6-sol");
+        assert!(models[0].is_default);
+        assert!(models[0].label.starts_with("GPT-5.6-Sol"));
+        match CodexAdapter.model_listing() {
+            ModelListing::Exchange(ex) => assert!(ex.inputs[2].contains("model/list")),
+            _ => panic!("교환 방식이어야 함"),
+        }
+
+        let job = Job {
+            id: 0,
+            title: "t".into(),
+            request: "hi".into(),
+            project_dir: "D:\\x".into(),
+            profile: "코딩 작업".into(),
+            allow_writes: false,
+            unattended_ok: false,
+            status: JobStatus::Starting,
+            model: Some("gpt-5.6-terra".into()),
+        };
+        let spec = CodexAdapter.build_resume_command(&job, "thr_1").unwrap();
+        let pos_m = spec.args.iter().position(|a| a == "-m").unwrap();
+        let pos_resume = spec.args.iter().position(|a| a == "resume").unwrap();
+        assert!(pos_m < pos_resume, "-m 옵션은 resume 서브커맨드 앞");
+        assert_eq!(spec.args[pos_m + 1], "gpt-5.6-terra");
     }
 }

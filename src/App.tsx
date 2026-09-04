@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import "./App.css";
-import type { AvailabilitySnapshot, CliId, Evidence, RunEvent } from "./types";
+import type { AvailabilitySnapshot, CliId, Evidence, ModelOption, RunEvent } from "./types";
 
 const CLI_LABEL: Record<CliId, string> = {
   codex: "Codex",
@@ -13,7 +13,7 @@ const CLI_LABEL: Record<CliId, string> = {
 };
 
 // 백엔드 get_availability가 오기 전까지의 표시 순서 (라우팅 기본 체인과 동일)
-const FALLBACK_ORDER: CliId[] = ["codex", "claude", "gemini"];
+const FALLBACK_ORDER: CliId[] = ["codex", "claude", "gemini", "opencode"];
 
 const STATE_LABEL: Record<AvailabilitySnapshot["state"], string> = {
   available: "Ready",
@@ -40,10 +40,12 @@ const WINDOW_LABEL: Record<string, string> = {
 const STORAGE_DIR = "agentdock.projectDir";
 const STORAGE_CLI = "agentdock.cli";
 const STORAGE_CHAIN = "agentdock.chain";
+const STORAGE_ENABLED = "agentdock.enabled";
+const STORAGE_MODEL_PREFIX = "agentdock.model.";
 
 const ALL_CLIS: CliId[] = ["codex", "claude", "gemini", "opencode"];
 
-function parseChain(raw: string): CliId[] {
+function parseCliList(raw: string): CliId[] {
   return raw
     .split(",")
     .map((s) => s.trim())
@@ -190,6 +192,12 @@ function store(key: string, value: string) {
   }
 }
 
+function loadModelChoices(): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const c of ALL_CLIS) out[c] = loadStored(STORAGE_MODEL_PREFIX + c, "");
+  return out;
+}
+
 function App() {
   const [statuses, setStatuses] = useState<AvailabilitySnapshot[]>([]);
   const [recommended, setRecommended] = useState<CliId | null>(null);
@@ -197,6 +205,12 @@ function App() {
   const [rechecking, setRechecking] = useState(false);
   const [dragging, setDragging] = useState<CliId | null>(null);
   const [dragOver, setDragOver] = useState<CliId | null>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [modelChoice, setModelChoice] = useState<Record<string, string>>(() => loadModelChoices());
+  const [modelOptions, setModelOptions] = useState<Record<string, ModelOption[]>>({});
+  const [modelLoading, setModelLoading] = useState<Record<string, boolean>>({});
+  const [loginBusy, setLoginBusy] = useState<CliId | null>(null);
+  const [loginMsg, setLoginMsg] = useState<Record<string, string>>({});
   const [convs, setConvs] = useState<Conversation[]>([]);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [projectDir, setProjectDir] = useState<string>(() => loadStored(STORAGE_DIR, ""));
@@ -209,7 +223,9 @@ function App() {
   const pendingRef = useRef<Record<number, RunEvent[]>>({});
   const endRef = useRef<HTMLDivElement | null>(null);
 
-  const cliOrder: CliId[] = statuses.length ? statuses.map((s) => s.cli) : FALLBACK_ORDER;
+  // 레지스트리 전체 순서(설정 패널)와 활성 CLI 순서(상단·상태바·라우팅)
+  const allOrder: CliId[] = statuses.length ? statuses.map((s) => s.cli) : FALLBACK_ORDER;
+  const cliOrder: CliId[] = statuses.length ? statuses.filter((s) => s.enabled).map((s) => s.cli) : FALLBACK_ORDER;
 
   function dispatch(convId: number, ev: RunEvent) {
     setConvs((prev) => prev.map((c) => (c.id === convId ? applyEvent(c, ev) : c)));
@@ -234,13 +250,17 @@ function App() {
     };
   }, []);
 
-  // 가용성: 시작 시 한 번 읽고(저장된 우선순위가 있으면 먼저 적용), 이후는 모니터가 밀어주는 이벤트로 갱신
+  // 가용성: 시작 시 저장된 우선순위·사용 여부를 먼저 적용해 한 번 읽고, 이후는 모니터가 밀어주는 이벤트로 갱신
   useEffect(() => {
-    const stored = parseChain(loadStored(STORAGE_CHAIN, ""));
-    const initial = stored.length
-      ? invoke<AvailabilitySnapshot[]>("set_routing_chain", { chain: stored })
-      : invoke<AvailabilitySnapshot[]>("get_availability");
-    initial.then(setStatuses).catch((e) => setError(String(e)));
+    const chain = parseCliList(loadStored(STORAGE_CHAIN, ""));
+    const enabled = parseCliList(loadStored(STORAGE_ENABLED, ""));
+    (async () => {
+      let snaps = chain.length
+        ? await invoke<AvailabilitySnapshot[]>("set_routing_chain", { chain })
+        : await invoke<AvailabilitySnapshot[]>("get_availability");
+      if (enabled.length) snaps = await invoke<AvailabilitySnapshot[]>("set_enabled_clis", { enabled });
+      setStatuses(snaps);
+    })().catch((e) => setError(String(e)));
     const un = listen<AvailabilitySnapshot[]>("availability-changed", ({ payload }) => setStatuses(payload));
     return () => {
       un.then((f) => f());
@@ -255,6 +275,8 @@ function App() {
 
   useEffect(() => {
     store(STORAGE_CLI, cli);
+    void loadModels(cli, false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cli]);
 
   const current = convs.find((c) => c.id === selectedId) ?? null;
@@ -264,6 +286,30 @@ function App() {
   useEffect(() => {
     endRef.current?.scrollIntoView({ block: "end" });
   }, [current?.items.length, selectedId]);
+
+  async function loadModels(target: CliId, force: boolean) {
+    if (!force && modelOptions[target]) return;
+    setModelLoading((m) => ({ ...m, [target]: true }));
+    try {
+      const list = await invoke<ModelOption[]>("list_models", { cli: target });
+      setModelOptions((m) => ({ ...m, [target]: list }));
+    } catch (e) {
+      setError(`${CLI_LABEL[target]} 모델 목록: ${String(e)}`);
+    } finally {
+      setModelLoading((m) => ({ ...m, [target]: false }));
+    }
+  }
+
+  function chooseModel(target: CliId, id: string) {
+    setModelChoice((m) => ({ ...m, [target]: id }));
+    store(STORAGE_MODEL_PREFIX + target, id);
+  }
+
+  function modelLabel(target: CliId): string {
+    const id = modelChoice[target];
+    if (!id) return "기본";
+    return modelOptions[target]?.find((m) => m.id === id)?.label.split(" — ")[0] ?? id;
+  }
 
   async function pickFolder() {
     try {
@@ -288,13 +334,24 @@ function App() {
     }
   }
 
+  async function applyEnabled(enabled: CliId[]) {
+    try {
+      const snaps = await invoke<AvailabilitySnapshot[]>("set_enabled_clis", { enabled });
+      setStatuses(snaps);
+      store(STORAGE_ENABLED, enabled.join(","));
+      if (!enabled.includes(cli)) setCli(enabled[0]);
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
   function dropOn(target: CliId) {
     const from = dragging;
     setDragging(null);
     setDragOver(null);
     if (!from || from === target) return;
-    const order = cliOrder.filter((c) => c !== from);
-    order.splice(cliOrder.indexOf(target), 0, from);
+    const order = allOrder.filter((c) => c !== from);
+    order.splice(allOrder.indexOf(target), 0, from);
     void applyChain(order);
   }
 
@@ -307,6 +364,19 @@ function App() {
       setError(String(e));
     } finally {
       setRechecking(false);
+    }
+  }
+
+  async function login(target: CliId) {
+    setLoginBusy(target);
+    setLoginMsg((m) => ({ ...m, [target]: "로그인 진행 중… 콘솔 창 또는 브라우저를 확인하세요." }));
+    try {
+      const msg = await invoke<string>("login_cli", { cli: target });
+      setLoginMsg((m) => ({ ...m, [target]: msg }));
+    } catch (e) {
+      setLoginMsg((m) => ({ ...m, [target]: String(e) }));
+    } finally {
+      setLoginBusy(null);
     }
   }
 
@@ -344,7 +414,8 @@ function App() {
     setInput("");
 
     try {
-      const args = { cli: conv.cli, request: text, projectDir: conv.projectDir, allowWrites: conv.allowWrites };
+      const model = modelChoice[conv.cli] || null;
+      const args = { cli: conv.cli, request: text, projectDir: conv.projectDir, allowWrites: conv.allowWrites, model };
       const runId = conv.sessionId
         ? await invoke<number>("continue_job", { ...args, sessionId: conv.sessionId })
         : await invoke<number>("start_job", args);
@@ -371,17 +442,45 @@ function App() {
     }
   }
 
+  function renderModelSelect(target: CliId, compact: boolean) {
+    const options = modelOptions[target] ?? [];
+    const loading = modelLoading[target];
+    return (
+      <span className="model-pick">
+        <select
+          value={modelChoice[target] ?? ""}
+          onChange={(e) => chooseModel(target, e.currentTarget.value)}
+          title={`${CLI_LABEL[target]} 모델 (비우면 CLI 기본값)`}
+        >
+          <option value="">기본{options.find((m) => m.is_default) ? ` (${options.find((m) => m.is_default)?.label.split(" — ")[0]})` : ""}</option>
+          {options.map((m) => (
+            <option key={m.id} value={m.id}>
+              {compact ? m.label.split(" — ")[0] : m.label}
+            </option>
+          ))}
+          {modelChoice[target] && !options.some((m) => m.id === modelChoice[target]) && (
+            <option value={modelChoice[target]}>{modelChoice[target]}</option>
+          )}
+        </select>
+        <button className="small" onClick={() => void loadModels(target, true)} disabled={loading} title="모델 목록 다시 불러오기">
+          {loading ? "…" : "↻"}
+        </button>
+      </span>
+    );
+  }
+
   return (
     <div className="app">
       <header className="cli-row" title="카드를 드래그해 라우팅 우선순위를 바꿉니다">
-        {cliOrder.map((id, i) => {
+        {cliOrder.map((id) => {
           const s = statuses.find((x) => x.cli === id);
           const state = s?.state ?? "unknown";
+          const rank = allOrder.indexOf(id) + 1;
           return (
             <div
               key={id}
               className={`cli-card state-${state}${id === cli ? " current" : ""}${dragging === id ? " dragging" : ""}${dragOver === id && dragging !== id ? " drag-over" : ""}`}
-              title={`${i + 1}순위${s?.version ? ` · 버전 ${s.version}` : ""} · 드래그해서 순서 변경`}
+              title={`${rank}순위${s?.version ? ` · 버전 ${s.version}` : ""} · 드래그해서 순서 변경`}
               draggable
               onDragStart={(e) => {
                 e.dataTransfer.effectAllowed = "move";
@@ -404,13 +503,16 @@ function App() {
               }}
             >
               {/* 상단 카드는 사용 가능 여부만 — 사용률·근거는 하단 상태바와 상세 패널에서 (2026-09-04 사용자 요청) */}
-              <span className="prio">{i + 1}</span>
+              <span className="prio">{rank}</span>
               <span className="dot" />
               <span className="cli-name">{CLI_LABEL[id]}</span>
               <span className="cli-state">{STATE_LABEL[state]}</span>
             </div>
           );
         })}
+        <button className="small settings-btn" onClick={() => setSettingsOpen(true)} title="CLI 레지스트리: 사용 여부·로그인·모델">
+          ⚙ CLI 설정
+        </button>
       </header>
 
       <main className="main">
@@ -441,11 +543,11 @@ function App() {
             <p className="run-meta">
               [{current.cli}] {current.projectDir}
               {current.sessionId ? ` · 세션 ${current.sessionId.slice(0, 8)}…` : ""}
-              {current.allowWrites ? " · 쓰기 허용" : " · 읽기 전용"}
+              {current.allowWrites ? " · 쓰기 허용" : " · 읽기 전용"} · 모델 {modelLabel(current.cli)}
             </p>
           ) : (
             <p className="run-meta">
-              새 대화 · CLI {cli} · {projectDir || "폴더 미선택"} · {allowWrites ? "쓰기 허용" : "읽기 전용"}
+              새 대화 · CLI {cli} · {projectDir || "폴더 미선택"} · {allowWrites ? "쓰기 허용" : "읽기 전용"} · 모델 {modelLabel(cli)}
             </p>
           )}
           <div className="transcript">
@@ -498,6 +600,7 @@ function App() {
               </option>
             ))}
           </select>
+          {renderModelSelect(cli, true)}
           <label className="check">
             <input type="checkbox" checked={allowWrites} onChange={(e) => setAllowWrites(e.currentTarget.checked)} />
             파일 쓰기 허용
@@ -526,6 +629,11 @@ function App() {
               </span>
               <span className={`evidence evidence-${detail.evidence}`}>{EVIDENCE_BADGE[detail.evidence]}</span>
               <span className="sb-spacer" />
+              {(detail.state === "auth_required" || detail.state === "unavailable" || detail.state === "unknown") && (
+                <button className="small" onClick={() => void login(detail.cli)} disabled={loginBusy !== null}>
+                  {loginBusy === detail.cli ? "로그인 중…" : "로그인"}
+                </button>
+              )}
               <button className="small" onClick={() => void recheck(detail.cli)} disabled={rechecking}>
                 {rechecking ? "재검사 중…" : "재검사"}
               </button>
@@ -549,11 +657,12 @@ function App() {
               <p className="muted">한도 윈도우 신호 없음 — 사용률은 표시하지 않습니다.</p>
             )}
             <p className="muted">
-              라우팅 순위 {cliOrder.indexOf(detail.cli) + 1}/{cliOrder.length} · 버전 {detail.version ?? "?"} · 갱신{" "}
+              라우팅 순위 {allOrder.indexOf(detail.cli) + 1}/{allOrder.length} · 버전 {detail.version ?? "?"} · 갱신{" "}
               {dateTime(detail.checked_at)} · 다음 재검사 {dateTime(detail.next_check_at)}
               {detail.recovered_at !== null && ` · 복귀 ${dateTime(detail.recovered_at)}`}
             </p>
             {detail.last_error && <p className="error">마지막 오류: {detail.last_error}</p>}
+            {loginMsg[detail.cli] && <p className="muted">{loginMsg[detail.cli]}</p>}
           </div>
         )}
         {cliOrder.map((id) => {
@@ -585,6 +694,91 @@ function App() {
           );
         })}
       </footer>
+
+      {settingsOpen && (
+        <div className="modal-backdrop" onClick={() => setSettingsOpen(false)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <div className="panel-head">
+              <h2>CLI 레지스트리</h2>
+              <div className="actions">
+                <button className="small" onClick={() => void recheck(null)} disabled={rechecking}>
+                  {rechecking ? "재검사 중…" : "전체 재검사"}
+                </button>
+                <button className="small" onClick={() => setSettingsOpen(false)}>
+                  닫기
+                </button>
+              </div>
+            </div>
+            <p className="muted">
+              사용을 끄면 상단·상태바·라우팅에서 빠집니다. 로그인은 각 CLI의 자체 로그인 흐름(브라우저 또는 콘솔 창)을 그대로 띄우며, 앱은 토큰을
+              저장하지 않습니다. 모델은 CLI가 제공하는 목록에서 고르고 비우면 CLI 기본값을 씁니다.
+            </p>
+            <table className="registry">
+              <thead>
+                <tr>
+                  <th>사용</th>
+                  <th>순위</th>
+                  <th>CLI</th>
+                  <th>상태</th>
+                  <th>버전</th>
+                  <th>로그인</th>
+                  <th>모델</th>
+                </tr>
+              </thead>
+              <tbody>
+                {allOrder.map((id, i) => {
+                  const s = statuses.find((x) => x.cli === id);
+                  const enabled = s?.enabled ?? true;
+                  const state = s?.state ?? "unknown";
+                  return (
+                    <tr key={id} className={enabled ? "" : "disabled"}>
+                      <td>
+                        <input
+                          type="checkbox"
+                          checked={enabled}
+                          onChange={(e) => {
+                            const next = e.currentTarget.checked
+                              ? [...cliOrder, id].filter((c, idx, arr) => arr.indexOf(c) === idx)
+                              : cliOrder.filter((c) => c !== id);
+                            const ordered = allOrder.filter((c) => next.includes(c));
+                            if (ordered.length === 0) {
+                              setError("최소 한 개의 CLI는 켜 두어야 합니다.");
+                              return;
+                            }
+                            void applyEnabled(ordered);
+                          }}
+                        />
+                      </td>
+                      <td className="num">{i + 1}</td>
+                      <td>
+                        <strong>{CLI_LABEL[id]}</strong>
+                      </td>
+                      <td>
+                        <span className={`sb-state state-${state}`}>
+                          <span className="dot" /> {STATE_LABEL[state]}
+                        </span>{" "}
+                        {s && <span className={`evidence evidence-${s.evidence}`}>{EVIDENCE_BADGE[s.evidence]}</span>}
+                        {s?.last_error && <div className="error small-text">{s.last_error}</div>}
+                      </td>
+                      <td>{s?.version ?? "?"}</td>
+                      <td>
+                        <button className="small" onClick={() => void login(id)} disabled={loginBusy !== null || !enabled}>
+                          {loginBusy === id ? "진행 중…" : "로그인"}
+                        </button>
+                        {loginMsg[id] && <div className="muted small-text">{loginMsg[id]}</div>}
+                      </td>
+                      <td>{enabled ? renderModelSelect(id, false) : <span className="muted">—</span>}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+            <p className="muted">
+              순서는 상단 카드를 드래그해 바꿉니다. OpenCode는 자체 제공자(API 키)로만 연결하며 Claude 구독 OAuth는 약관상 연결하지 않습니다.
+            </p>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

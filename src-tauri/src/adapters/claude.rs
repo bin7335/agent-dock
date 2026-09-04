@@ -1,18 +1,18 @@
 use serde_json::Value;
 
-use super::{probe_detail, AgentEvent, CliAdapter};
+use super::{model_opt, probe_detail, AgentEvent, CliAdapter, LoginFlow, ModelListing};
 use crate::availability::{Evidence, ProbeOutcome};
 use crate::models::{CliId, CommandSpec, Job};
 
 /// Claude Code 어댑터.
 /// 실측 근거: `claude -p --output-format stream-json --verbose` (스파이크 0, 2026-09-02),
-/// stdin 프롬프트 전달과 `claude auth status` JSON (2026-09-04 실측).
+/// stdin 프롬프트 전달과 `claude auth status` JSON, `claude auth login`, `--model` 별칭(fable/opus/sonnet) (2026-09-04 실측).
 pub struct ClaudeAdapter;
 
 impl ClaudeAdapter {
     /// 프롬프트는 인자가 아니라 stdin으로 넘긴다 — 여러 줄·특수문자 프롬프트를 cmd 이스케이프에 태우지 않기 위해.
     fn base_args(job: &Job) -> Vec<String> {
-        vec![
+        let mut args = vec![
             "-p".to_string(),
             "--output-format".into(),
             "stream-json".into(),
@@ -20,7 +20,12 @@ impl ClaudeAdapter {
             "--permission-mode".into(),
             // 파일 쓰기 허용 여부 → --permission-mode 매핑 (스파이크 2차 결과)
             if job.allow_writes { "acceptEdits" } else { "plan" }.into(),
-        ]
+        ];
+        if let Some(m) = job.model.as_deref().filter(|m| !m.is_empty()) {
+            args.push("--model".into());
+            args.push(m.to_string());
+        }
+        args
     }
 }
 
@@ -136,6 +141,29 @@ impl CliAdapter for ClaudeAdapter {
         Some(spec)
     }
 
+    fn login_flow(&self) -> Option<LoginFlow> {
+        Some(LoginFlow::Console {
+            spec: CommandSpec {
+                program: "claude".into(),
+                args: vec!["auth".into(), "login".into()],
+                env: vec![],
+                cwd: String::new(),
+                stdin: None,
+            },
+            hint: "브라우저가 열리면 Anthropic 계정으로 로그인하세요. 콘솔 창에 코드 입력을 요구하면 그대로 따릅니다.".into(),
+        })
+    }
+
+    /// `--model`은 별칭(fable/opus/sonnet/haiku) 또는 전체 이름을 받는다 (claude --help 실측)
+    fn model_listing(&self) -> ModelListing {
+        ModelListing::Static(vec![
+            model_opt("fable", "Fable (최신)", false),
+            model_opt("opus", "Opus", false),
+            model_opt("sonnet", "Sonnet", false),
+            model_opt("haiku", "Haiku", false),
+        ])
+    }
+
     fn interpret_probe(&self, code: Option<i32>, stdout: &str, stderr: &str) -> ProbeOutcome {
         if let Ok(v) = serde_json::from_str::<Value>(stdout.trim()) {
             return match v.get("loggedIn").and_then(Value::as_bool) {
@@ -170,7 +198,7 @@ mod tests {
     use super::*;
     use crate::models::JobStatus;
 
-    fn job(allow_writes: bool) -> Job {
+    fn job(allow_writes: bool, model: Option<&str>) -> Job {
         Job {
             id: 0,
             title: "t".into(),
@@ -180,29 +208,32 @@ mod tests {
             allow_writes,
             unattended_ok: false,
             status: JobStatus::Starting,
+            model: model.map(String::from),
         }
     }
 
     #[test]
     fn prompt_goes_through_stdin_not_args() {
-        let spec = ClaudeAdapter.build_command(&job(false));
+        let spec = ClaudeAdapter.build_command(&job(false, None));
         assert_eq!(spec.stdin.as_deref(), Some("line one\nline two"));
         assert!(!spec.args.iter().any(|a| a.contains("line one")));
         assert!(spec
             .args
             .windows(2)
             .any(|w| w == ["--permission-mode", "plan"]));
-        let spec = ClaudeAdapter.build_command(&job(true));
+        assert!(!spec.args.iter().any(|a| a == "--model"));
+        let spec = ClaudeAdapter.build_command(&job(true, Some("fable")));
         assert!(spec
             .args
             .windows(2)
             .any(|w| w == ["--permission-mode", "acceptEdits"]));
+        assert!(spec.args.windows(2).any(|w| w == ["--model", "fable"]));
     }
 
     #[test]
     fn resume_appends_session() {
         let spec = ClaudeAdapter
-            .build_resume_command(&job(false), "abc")
+            .build_resume_command(&job(false, None), "abc")
             .unwrap();
         assert_eq!(&spec.args[spec.args.len() - 2..], ["--resume", "abc"]);
         assert!(spec.stdin.is_some());
@@ -238,5 +269,14 @@ mod tests {
             AgentEvent::RateLimit { window, utilization, resets_at }
                 if window == "five_hour" && (*utilization - 0.08).abs() < 1e-9 && *resets_at == 1788511200
         )));
+    }
+
+    #[test]
+    fn login_and_models() {
+        assert!(matches!(ClaudeAdapter.login_flow(), Some(LoginFlow::Console { .. })));
+        match ClaudeAdapter.model_listing() {
+            ModelListing::Static(v) => assert!(v.iter().any(|m| m.id == "fable")),
+            _ => panic!("정적 목록이어야 함"),
+        }
     }
 }
