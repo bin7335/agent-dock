@@ -185,6 +185,27 @@ pub fn extract_reset_epoch(text: &str) -> Option<i64> {
         .find(|n| (1_600_000_000..2_200_000_000).contains(n))
 }
 
+/// 공식 프로토콜에서 읽은 한도 윈도우 하나 (예: Codex app-server RateLimitSnapshot의 primary/secondary)
+#[derive(Debug, Clone, PartialEq)]
+pub struct RateLimitReading {
+    pub window: String,
+    /// 0.0~1.0
+    pub utilization: f64,
+    /// epoch seconds, 0 = 미상
+    pub resets_at: i64,
+}
+
+/// 윈도우 길이(분)를 Claude의 윈도우 이름과 맞춰 상태바 라벨을 공유한다.
+pub fn window_name_for_minutes(mins: i64) -> String {
+    match mins {
+        300 => "five_hour".into(),
+        10080 => "seven_day".into(),
+        m if m > 0 && m % 1440 == 0 => format!("{}d", m / 1440),
+        m if m > 0 && m % 60 == 0 => format!("{}h", m / 60),
+        m => format!("{m}m"),
+    }
+}
+
 /// probe 명령의 해석 결과 (어댑터가 만든다)
 #[derive(Debug, Clone, PartialEq)]
 pub enum ProbeOutcome {
@@ -588,5 +609,14 @@ mod tests {
             Some(1_725_436_800)
         );
         assert_eq!(extract_reset_epoch("no epoch here 12345"), None);
+    }
+
+    #[test]
+    fn window_names_match_claude_convention() {
+        assert_eq!(window_name_for_minutes(300), "five_hour");
+        assert_eq!(window_name_for_minutes(10080), "seven_day");
+        assert_eq!(window_name_for_minutes(1440), "1d");
+        assert_eq!(window_name_for_minutes(120), "2h");
+        assert_eq!(window_name_for_minutes(45), "45m");
     }
 }

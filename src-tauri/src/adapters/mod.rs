@@ -2,8 +2,15 @@ pub mod claude;
 pub mod codex;
 pub mod gemini;
 
-use crate::availability::{Evidence, ProbeOutcome};
+use crate::availability::{Evidence, ProbeOutcome, RateLimitReading};
 use crate::models::{CliId, CommandSpec, Job};
+
+/// 공식 사용량을 읽기 위한 줄 단위 교환: 명령, 보낼 줄들, 마지막 요청의 id(이 응답을 받으면 끝).
+pub struct RateLimitExchange {
+    pub spec: CommandSpec,
+    pub inputs: Vec<String>,
+    pub done_id: u64,
+}
 
 /// CLI별 스트림에서 파싱된 공통 이벤트.
 /// 변형들은 스파이크 0 실측 이벤트 형태를 기준으로 한다 (PRD 15장).
@@ -41,6 +48,16 @@ pub trait CliAdapter: Send + Sync {
     /// 기존 세션을 이어가는 후속 메시지 명령. 세션 재개를 지원하지 않는 CLI는 None.
     fn build_resume_command(&self, _job: &Job, _session_id: &str) -> Option<CommandSpec> {
         None
+    }
+
+    /// 공식 사용량을 읽는 교환. 없으면 None — Claude는 실행 스트림의 rate_limit_event로, Gemini는 신호가 없다.
+    fn rate_limit_exchange(&self) -> Option<RateLimitExchange> {
+        None
+    }
+
+    /// rate_limit_exchange 응답 줄들을 윈도우 읽기로 변환
+    fn parse_rate_limits(&self, _lines: &[String]) -> Vec<RateLimitReading> {
+        Vec::new()
     }
 
     /// probe 명령의 종료 코드·출력을 가용성 판단으로 해석한다.

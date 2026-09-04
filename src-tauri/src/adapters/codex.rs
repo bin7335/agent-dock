@@ -1,14 +1,18 @@
-use serde_json::Value;
+use serde_json::{json, Value};
 
-use super::{probe_detail, AgentEvent, CliAdapter};
-use crate::availability::{Evidence, ProbeOutcome};
+use super::{probe_detail, AgentEvent, CliAdapter, RateLimitExchange};
+use crate::availability::{window_name_for_minutes, Evidence, ProbeOutcome, RateLimitReading};
 use crate::models::{CliId, CommandSpec, Job};
 
 /// Codex 어댑터.
 /// 실측 근거: `codex exec --json` JSONL (스파이크 0, 2026-09-02).
-/// 사용량 %는 exec 스트림에 없고 app-server의 account/rateLimits/read로 읽는다 (1단계 검증 예정).
+/// 사용량 %는 exec 스트림에 없고 `codex app-server`(stdio JSON-RPC)의 `account/rateLimits/read`로 읽는다
+/// (2026-09-04 실측: initialize → initialized → 요청, 응답 `result.rateLimits.primary{usedPercent,windowDurationMins,resetsAt}`).
 /// 프롬프트는 아직 인자로 넘기므로 줄바꿈이 든 메시지는 실행 단계에서 거부된다 (TODO: stdin 전달 실측).
 pub struct CodexAdapter;
+
+const RL_INIT_ID: u64 = 1;
+const RL_READ_ID: u64 = 2;
 
 impl CodexAdapter {
     fn common_args(job: &Job) -> Vec<String> {
@@ -142,6 +146,67 @@ impl CliAdapter for CodexAdapter {
         })
     }
 
+    fn rate_limit_exchange(&self) -> Option<RateLimitExchange> {
+        Some(RateLimitExchange {
+            spec: CommandSpec {
+                program: "codex".into(),
+                args: vec!["app-server".into()],
+                env: vec![],
+                cwd: String::new(),
+                stdin: None,
+            },
+            inputs: vec![
+                json!({
+                    "id": RL_INIT_ID,
+                    "method": "initialize",
+                    "params": {"clientInfo": {"name": "agent-dock", "title": "Agent Dock", "version": env!("CARGO_PKG_VERSION")}}
+                })
+                .to_string(),
+                json!({"method": "initialized", "params": {}}).to_string(),
+                json!({"id": RL_READ_ID, "method": "account/rateLimits/read", "params": {}}).to_string(),
+            ],
+            done_id: RL_READ_ID,
+        })
+    }
+
+    /// 계정 단위 `rateLimits`의 primary/secondary만 쓴다. 모델별 한도(`rateLimitsByLimitId`)는 MVP에서 제외.
+    /// `rateLimitReachedType`이 채워져 있으면 한도 도달로 보고 primary 사용률을 100%로 올린다.
+    fn parse_rate_limits(&self, lines: &[String]) -> Vec<RateLimitReading> {
+        for line in lines {
+            let Ok(v) = serde_json::from_str::<Value>(line) else {
+                continue;
+            };
+            if v.get("id").and_then(Value::as_u64) != Some(RL_READ_ID) {
+                continue;
+            }
+            let Some(rl) = v.pointer("/result/rateLimits") else {
+                return vec![];
+            };
+            let reached = rl
+                .get("rateLimitReachedType")
+                .map_or(false, |t| !t.is_null());
+            let mut out = vec![];
+            for (i, key) in ["primary", "secondary"].iter().enumerate() {
+                let Some(w) = rl.get(*key).filter(|w| !w.is_null()) else {
+                    continue;
+                };
+                let mins = w.get("windowDurationMins").and_then(Value::as_i64).unwrap_or(0);
+                let mut utilization =
+                    w.get("usedPercent").and_then(Value::as_f64).unwrap_or(0.0) / 100.0;
+                if reached && i == 0 {
+                    utilization = utilization.max(1.0);
+                }
+                out.push(RateLimitReading {
+                    window: window_name_for_minutes(mins),
+                    utilization,
+                    resets_at: w.get("resetsAt").and_then(Value::as_i64).unwrap_or(0),
+                });
+            }
+            return out;
+        }
+        vec![]
+    }
+
     fn interpret_probe(&self, code: Option<i32>, stdout: &str, stderr: &str) -> ProbeOutcome {
         let text = format!("{stdout}\n{stderr}").to_ascii_lowercase();
         if text.contains("not logged in") {
@@ -187,5 +252,40 @@ mod tests {
             CodexAdapter.interpret_probe(None, "", "not recognized"),
             ProbeOutcome::Unavailable { .. }
         ));
+    }
+
+    /// 2026-09-04 실측 응답(요약)으로 파싱 검증
+    #[test]
+    fn app_server_rate_limits_are_parsed() {
+        let lines = vec![
+            r#"{"id":1,"result":{"userAgent":"agent-dock/0.152.1","codexHome":"C:\\Users\\User\\.codex"}}"#.to_string(),
+            r#"{"method":"remoteControl/status/changed","params":{"status":"disabled"}}"#.to_string(),
+            r#"{"id":2,"result":{"rateLimits":{"limitId":"codex","limitName":null,"primary":{"usedPercent":46,"windowDurationMins":10080,"resetsAt":1788748787},"secondary":null,"credits":{"hasCredits":false},"planType":"prolite","rateLimitReachedType":null},"rateLimitsByLimitId":{}}}"#.to_string(),
+        ];
+        let r = CodexAdapter.parse_rate_limits(&lines);
+        assert_eq!(
+            r,
+            vec![RateLimitReading {
+                window: "seven_day".into(),
+                utilization: 0.46,
+                resets_at: 1788748787
+            }]
+        );
+
+        let reached = vec![
+            r#"{"id":2,"result":{"rateLimits":{"primary":{"usedPercent":100,"windowDurationMins":300,"resetsAt":1788517917},"secondary":{"usedPercent":52,"windowDurationMins":10080,"resetsAt":1789104717},"rateLimitReachedType":"primary"}}}"#.to_string(),
+        ];
+        let r = CodexAdapter.parse_rate_limits(&reached);
+        assert_eq!(r.len(), 2);
+        assert_eq!(r[0].window, "five_hour");
+        assert!(r[0].utilization >= 1.0);
+        assert_eq!(r[1].window, "seven_day");
+        assert!((r[1].utilization - 0.52).abs() < 1e-9);
+
+        assert!(CodexAdapter.parse_rate_limits(&[]).is_empty());
+        let ex = CodexAdapter.rate_limit_exchange().unwrap();
+        assert_eq!(ex.spec.args, vec!["app-server"]);
+        assert_eq!(ex.inputs.len(), 3);
+        assert!(ex.inputs[2].contains("account/rateLimits/read"));
     }
 }

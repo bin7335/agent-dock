@@ -127,8 +127,31 @@ async fn run_probes(app: &AppHandle, monitor: &Mutex<AvailabilityMonitor>, clis:
             continue;
         };
         let outcome = probe_one(adapter.as_ref()).await;
+        let ready = matches!(outcome, ProbeOutcome::Ready { .. });
         if let Ok(mut m) = monitor.lock() {
             m.apply_probe(*cli, outcome, now());
+        }
+        // 설치·로그인이 확인된 CLI만 공식 사용량을 읽는다 (Codex app-server 등)
+        if ready {
+            if let Some(ex) = adapter.rate_limit_exchange() {
+                let done_id = ex.done_id;
+                let done = move |line: &str| {
+                    serde_json::from_str::<serde_json::Value>(line)
+                        .ok()
+                        .and_then(|v| v.get("id").and_then(|i| i.as_u64()))
+                        == Some(done_id)
+                };
+                if let Ok(lines) =
+                    runner::exchange_lines(&ex.spec, &ex.inputs, done, PROBE_TIMEOUT).await
+                {
+                    let readings = adapter.parse_rate_limits(&lines);
+                    if let Ok(mut m) = monitor.lock() {
+                        for r in &readings {
+                            m.apply_rate_limit(*cli, &r.window, r.utilization, r.resets_at, now());
+                        }
+                    }
+                }
+            }
         }
         emit_availability(app, monitor);
     }

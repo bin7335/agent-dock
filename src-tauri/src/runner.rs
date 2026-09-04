@@ -185,6 +185,45 @@ pub async fn run_capture(spec: &CommandSpec, timeout: Duration) -> std::io::Resu
     }
 }
 
+/// 줄 단위 프로토콜(JSON-RPC over stdio 등) 교환. 프로세스를 띄워 inputs를 한 줄씩 써 넣고,
+/// done(line)이 true인 줄을 받을 때까지 stdout을 모은다. 끝나거나 timeout이 지나면 프로세스를 죽인다.
+/// 용도: Codex `app-server`의 `account/rateLimits/read` (PRD 15장 스파이크, 2026-09-04 실측).
+pub async fn exchange_lines(
+    spec: &CommandSpec,
+    inputs: &[String],
+    done: impl Fn(&str) -> bool,
+    timeout: Duration,
+) -> std::io::Result<Vec<String>> {
+    let mut cmd = os_command(spec);
+    cmd.stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .kill_on_drop(true);
+    let mut child = cmd.spawn()?;
+    let mut stdin = child.stdin.take().expect("stdin piped");
+    let stdout = child.stdout.take().expect("stdout piped");
+    for line in inputs {
+        stdin.write_all(line.as_bytes()).await?;
+        stdin.write_all(b"\n").await?;
+    }
+    stdin.flush().await?;
+
+    let mut collected = Vec::new();
+    let mut reader = BufReader::new(stdout).lines();
+    let collect = async {
+        while let Ok(Some(line)) = reader.next_line().await {
+            let finished = done(&line);
+            collected.push(line);
+            if finished {
+                break;
+            }
+        }
+    };
+    let _ = tokio::time::timeout(timeout, collect).await;
+    let _ = child.start_kill();
+    Ok(collected)
+}
+
 /// 실행 명령 조립.
 /// Windows에서 npm 계열 CLI(claude·gemini·opencode)는 실체가 .cmd 셔임이라 CreateProcess로 직접 실행되지
 /// 않는다. PATH에서 실제 파일(.exe → .cmd → .bat)을 찾아 그 경로로 실행하면, .cmd/.bat는 Rust 표준 라이브러리가
