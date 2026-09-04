@@ -2,7 +2,7 @@ use serde_json::Value;
 
 use super::{model_opt, probe_detail, AgentEvent, CliAdapter, LoginFlow, ModelListing};
 use crate::availability::{Evidence, ProbeOutcome};
-use crate::models::{CliId, CommandSpec, Job};
+use crate::models::{CliId, CommandSpec, Job, ModelOption};
 
 /// Claude Code 어댑터.
 /// 실측 근거: `claude -p --output-format stream-json --verbose` (스파이크 0, 2026-09-02),
@@ -154,14 +154,113 @@ impl CliAdapter for ClaudeAdapter {
         })
     }
 
-    /// `--model`은 별칭(fable/opus/sonnet/haiku) 또는 전체 이름을 받는다 (claude --help 실측)
+    /// `--model`은 별칭(fable/opus/sonnet/haiku) 또는 전체 이름을 받는다 (claude --help 실측).
+    /// 목록 명령이 없으므로 설치된 네이티브 바이너리에서 이 CLI가 아는 모델 id를 추출한다 (2.1.259 실측: 35개 문자열).
     fn model_listing(&self) -> ModelListing {
-        ModelListing::Static(vec![
-            model_opt("fable", "Fable (최신)", false),
-            model_opt("opus", "Opus", false),
-            model_opt("sonnet", "Sonnet", false),
-            model_opt("haiku", "Haiku", false),
-        ])
+        let mut candidates = Vec::new();
+        if let Ok(appdata) = std::env::var("APPDATA") {
+            let pkg = std::path::Path::new(&appdata)
+                .join("npm")
+                .join("node_modules")
+                .join("@anthropic-ai")
+                .join("claude-code");
+            candidates.push(pkg.join("bin").join("claude.exe"));
+            candidates.push(
+                pkg.join("node_modules")
+                    .join("@anthropic-ai")
+                    .join("claude-code-win32-x64")
+                    .join("claude.exe"),
+            );
+        }
+        if let Ok(local) = std::env::var("LOCALAPPDATA") {
+            candidates.push(
+                std::path::Path::new(&local)
+                    .join("Programs")
+                    .join("claude")
+                    .join("claude.exe"),
+            );
+        }
+        if let Ok(home) = std::env::var("USERPROFILE") {
+            candidates.push(
+                std::path::Path::new(&home)
+                    .join(".local")
+                    .join("bin")
+                    .join("claude.exe"),
+            );
+        }
+        ModelListing::Scan { candidates }
+    }
+
+    /// 바이너리 문자열 중 정식 짧은 id(`claude-<계열>-<메이저>[-<마이너>]`)만 남긴다.
+    /// 날짜 접미사(-20250514)·`-v1` 같은 내부 변형은 제외. 별칭 4개를 맨 위에 둔다.
+    fn scan_models(&self, bytes: &[u8]) -> Vec<ModelOption> {
+        let families = ["fable", "opus", "sonnet", "haiku"];
+        let mut found: Vec<(usize, Vec<u32>, String)> = Vec::new();
+        let needle = b"claude-";
+        let mut i = 0;
+        while i + needle.len() <= bytes.len() {
+            if &bytes[i..i + needle.len()] != needle {
+                i += 1;
+                continue;
+            }
+            let start = i;
+            let mut end = i + needle.len();
+            while end < bytes.len()
+                && (bytes[end].is_ascii_lowercase()
+                    || bytes[end].is_ascii_digit()
+                    || bytes[end] == b'-'
+                    || bytes[end] == b'.')
+            {
+                end += 1;
+            }
+            i = end.max(start + 1);
+            let Ok(id) = std::str::from_utf8(&bytes[start..end]) else {
+                continue;
+            };
+            let rest = &id["claude-".len()..];
+            let Some((fam_idx, family)) = families
+                .iter()
+                .enumerate()
+                .find(|(_, f)| rest.starts_with(&format!("{f}-")))
+            else {
+                continue;
+            };
+            let version = &rest[family.len() + 1..];
+            let parts: Vec<&str> = version.split('-').collect();
+            if parts.is_empty()
+                || parts.len() > 2
+                || parts.iter().any(|p| p.is_empty() || p.len() > 2 || !p.bytes().all(|b| b.is_ascii_digit()))
+            {
+                continue;
+            }
+            let nums: Vec<u32> = parts.iter().filter_map(|p| p.parse().ok()).collect();
+            if !found.iter().any(|(_, _, existing)| existing == id) {
+                found.push((fam_idx, nums, id.to_string()));
+            }
+        }
+        // 계열 순서(fable → opus → sonnet → haiku), 계열 안에서는 버전 내림차순
+        found.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| b.1.cmp(&a.1)));
+
+        let mut out = vec![
+            model_opt("fable", "Fable (최신 별칭)", false),
+            model_opt("opus", "Opus (최신 별칭)", false),
+            model_opt("sonnet", "Sonnet (최신 별칭)", false),
+            model_opt("haiku", "Haiku (최신 별칭)", false),
+        ];
+        for (fam_idx, nums, id) in found {
+            let family = families[fam_idx];
+            let mut name = family[..1].to_uppercase() + &family[1..];
+            name.push(' ');
+            name.push_str(
+                &nums
+                    .iter()
+                    .map(u32::to_string)
+                    .collect::<Vec<_>>()
+                    .join("."),
+            );
+            out.push(model_opt(&id, &format!("{name} — {id}"), false));
+        }
+        out
     }
 
     fn interpret_probe(&self, code: Option<i32>, stdout: &str, stderr: &str) -> ProbeOutcome {
@@ -274,9 +373,29 @@ mod tests {
     #[test]
     fn login_and_models() {
         assert!(matches!(ClaudeAdapter.login_flow(), Some(LoginFlow::Console { .. })));
-        match ClaudeAdapter.model_listing() {
-            ModelListing::Static(v) => assert!(v.iter().any(|m| m.id == "fable")),
-            _ => panic!("정적 목록이어야 함"),
-        }
+        assert!(matches!(ClaudeAdapter.model_listing(), ModelListing::Scan { .. }));
+
+        // 바이너리 문자열 흉내: 정식 id, 날짜 변형, v1 변형, 중복, 관련 없는 문자열
+        let blob = b"xx claude-opus-4-8\0claude-fable-5-1 claude-sonnet-4-5-20250929 claude-opus-4-1-20250805-v1 \
+                     claude-fable-5 claude-opus-5 claude-haiku-4-5 claude-opus-4-8 claude-sonnet-5 claude-sonnet-3-7 claude-3-5-sonnet claude-sonnet-4-5 claude-sonnet-4-5";
+        let models = ClaudeAdapter.scan_models(blob);
+        let ids: Vec<&str> = models.iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(&ids[..4], ["fable", "opus", "sonnet", "haiku"], "별칭이 맨 위");
+        assert_eq!(
+            &ids[4..],
+            [
+                "claude-fable-5-1",
+                "claude-fable-5",
+                "claude-opus-5",
+                "claude-opus-4-8",
+                "claude-sonnet-5",
+                "claude-sonnet-4-5",
+                "claude-sonnet-3-7",
+                "claude-haiku-4-5"
+            ],
+            "계열 순서·버전 내림차순, 날짜·v1 변형 제외, 중복 제거"
+        );
+        assert!(models.iter().any(|m| m.label.starts_with("Fable 5.1 — claude-fable-5-1")));
+        assert_eq!(ClaudeAdapter.scan_models(b"").len(), 4, "파일이 없으면 별칭만");
     }
 }

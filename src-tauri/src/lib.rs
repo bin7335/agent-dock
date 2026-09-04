@@ -368,6 +368,19 @@ async fn list_models(cli: CliId) -> Result<Vec<ModelOption>, String> {
             let lines: Vec<String> = out.stdout.lines().map(String::from).collect();
             Ok(adapter.parse_models(&lines))
         }
+        ModelListing::Scan { candidates } => {
+            // 200MB급 바이너리를 읽으므로 블로킹 스레드에서
+            let bytes = tokio::task::spawn_blocking(move || {
+                candidates
+                    .iter()
+                    .find(|p| p.is_file())
+                    .and_then(|p| std::fs::read(p).ok())
+                    .unwrap_or_default()
+            })
+            .await
+            .map_err(|e| e.to_string())?;
+            Ok(adapter.scan_models(&bytes))
+        }
     }
 }
 

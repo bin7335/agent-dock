@@ -48,6 +48,9 @@ pub enum ModelListing {
     Static(Vec<ModelOption>),
     Exchange(LineExchange),
     Command(CommandSpec),
+    /// CLI 실행 파일을 읽어 어댑터의 scan_models로 모델 id를 추출한다 (목록 명령이 없는 Claude Code용).
+    /// candidates 중 처음 존재하는 파일을 쓴다. 하나도 없으면 빈 바이트로 호출한다.
+    Scan { candidates: Vec<std::path::PathBuf> },
 }
 
 /// JSON-RPC 계열 응답 줄이 특정 id의 응답인지
@@ -108,6 +111,11 @@ pub trait CliAdapter: Send + Sync {
 
     /// Exchange/Command 방식 모델 목록의 출력 줄을 선택지로 변환
     fn parse_models(&self, _lines: &[String]) -> Vec<ModelOption> {
+        Vec::new()
+    }
+
+    /// Scan 방식: 실행 파일 바이트에서 모델 선택지를 추출
+    fn scan_models(&self, _bytes: &[u8]) -> Vec<ModelOption> {
         Vec::new()
     }
 
