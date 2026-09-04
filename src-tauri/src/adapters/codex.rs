@@ -244,6 +244,16 @@ impl CliAdapter for CodexAdapter {
         vec![]
     }
 
+    fn version_command(&self) -> Option<CommandSpec> {
+        Some(CommandSpec {
+            program: "codex".into(),
+            args: vec!["--version".into()],
+            env: vec![],
+            cwd: String::new(),
+            stdin: None,
+        })
+    }
+
     fn login_flow(&self) -> Option<LoginFlow> {
         Some(LoginFlow::Console {
             spec: CommandSpec {

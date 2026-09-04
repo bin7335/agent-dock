@@ -158,6 +158,16 @@ impl CliAdapter for AntigravityAdapter {
         Some(spec)
     }
 
+    fn version_command(&self) -> Option<CommandSpec> {
+        Some(CommandSpec {
+            program: "agy".into(),
+            args: vec!["--version".into()],
+            env: vec![],
+            cwd: String::new(),
+            stdin: None,
+        })
+    }
+
     /// 대화형 `agy`를 콘솔 창에서 띄우면 브라우저 로그인이 시작된다. 로그인 후 `/exit`로 나오면 창이 닫히며 재검사.
     fn login_flow(&self) -> Option<LoginFlow> {
         Some(LoginFlow::Console {

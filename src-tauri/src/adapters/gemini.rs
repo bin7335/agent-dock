@@ -263,19 +263,18 @@ impl CliAdapter for GeminiAdapter {
         Some(spec)
     }
 
-    /// ACP `authenticate` — initialize 응답의 authMethods에 `oauth-personal`("Log in with Google")이 있다 (0.54.4 실측)
+    /// Google 개인 계정 OAuth(oauth-personal)는 2026-06-18부로 Gemini CLI에서 종료(IneligibleTierError, Antigravity로 이전).
+    /// 따라서 로그인 버튼은 대화형 `gemini`를 콘솔에서 띄워 `/auth`에서 API 키(gemini-api-key) 방식을 설정하게 한다.
     fn login_flow(&self) -> Option<LoginFlow> {
-        Some(LoginFlow::Exchange {
-            exchange: LineExchange {
-                spec: acp_spec(),
-                inputs: vec![
-                    acp_initialize(),
-                    json!({"jsonrpc": "2.0", "id": ACP_SECOND_ID, "method": "authenticate", "params": {"methodId": "oauth-personal"}})
-                        .to_string(),
-                ],
-                done_id: ACP_SECOND_ID,
+        Some(LoginFlow::Console {
+            spec: CommandSpec {
+                program: "gemini".into(),
+                args: vec![],
+                env: vec![],
+                cwd: String::new(),
+                stdin: None,
             },
-            hint: "브라우저가 열리면 Google 계정으로 로그인하세요. API 키를 쓰려면 터미널에서 `gemini`를 실행해 `/auth`에서 방식을 고릅니다.".into(),
+            hint: "Gemini CLI는 개인 Google 로그인이 종료됐습니다(AI Pro는 Antigravity 항목을 쓰세요). 콘솔에서 /auth → Gemini API key를 고르고 키를 입력한 뒤 /quit로 나오세요.".into(),
         })
     }
 
@@ -391,7 +390,7 @@ mod tests {
         assert_eq!(models[0].id, "auto");
         assert!(models[0].is_default);
         assert_eq!(models[1].label, "gemini-2.5-pro");
-        assert!(matches!(GeminiAdapter.login_flow(), Some(LoginFlow::Exchange { .. })));
+        assert!(matches!(GeminiAdapter.login_flow(), Some(LoginFlow::Console { .. })));
 
         let job = Job {
             id: 0,

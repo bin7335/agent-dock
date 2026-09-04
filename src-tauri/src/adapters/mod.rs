@@ -41,6 +41,8 @@ pub struct LineExchange {
 /// Exchange는 stdio 프로토콜(Gemini ACP `authenticate`)로 진행한다.
 pub enum LoginFlow {
     Console { spec: CommandSpec, hint: String },
+    /// 현재 사용처 없음(Gemini 개인 OAuth 종료). ACP authenticate 방식 CLI가 생기면 다시 쓴다
+    #[allow(dead_code)]
     Exchange { exchange: LineExchange, hint: String },
 }
 
@@ -120,6 +122,11 @@ pub trait CliAdapter: Send + Sync {
 
     /// 앱에서 띄울 로그인 흐름. None이면 앱 밖에서 로그인해야 한다.
     fn login_flow(&self) -> Option<LoginFlow> {
+        None
+    }
+
+    /// 버전 확인 명령(첫 줄이 버전). probe가 버전을 못 주는 CLI용 — Ready로 판정된 뒤 한 번 실행한다.
+    fn version_command(&self) -> Option<CommandSpec> {
         None
     }
 

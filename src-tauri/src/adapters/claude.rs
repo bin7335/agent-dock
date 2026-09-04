@@ -141,6 +141,16 @@ impl CliAdapter for ClaudeAdapter {
         Some(spec)
     }
 
+    fn version_command(&self) -> Option<CommandSpec> {
+        Some(CommandSpec {
+            program: "claude".into(),
+            args: vec!["--version".into()],
+            env: vec![],
+            cwd: String::new(),
+            stdin: None,
+        })
+    }
+
     fn login_flow(&self) -> Option<LoginFlow> {
         Some(LoginFlow::Console {
             spec: CommandSpec {

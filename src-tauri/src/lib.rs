@@ -185,6 +185,18 @@ async fn run_probes(app: &AppHandle, monitor: &Mutex<AvailabilityMonitor>, clis:
         if let Ok(mut m) = monitor.lock() {
             m.apply_probe(*cli, outcome, now());
         }
+        // 버전은 별도 명령으로 (probe가 버전을 안 주는 CLI)
+        if ready {
+            if let Some(spec) = adapter.version_command() {
+                if let Ok(out) = runner::run_capture(&spec, Duration::from_secs(15)).await {
+                    if let Some(v) = adapters::first_line(&out.stdout).filter(|_| out.code == Some(0)) {
+                        if let Ok(mut m) = monitor.lock() {
+                            m.set_version(*cli, v);
+                        }
+                    }
+                }
+            }
+        }
         // 설치·로그인이 확인된 CLI만 공식 사용량을 읽는다 (Codex app-server 등)
         if ready {
             if let Some(ex) = adapter.rate_limit_exchange() {

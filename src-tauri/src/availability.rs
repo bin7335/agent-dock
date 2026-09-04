@@ -306,6 +306,13 @@ impl AvailabilityMonitor {
             .collect()
     }
 
+    /// version_command 결과 반영
+    pub fn set_version(&mut self, cli: CliId, version: String) {
+        if let Some(s) = self.map.get_mut(&cli) {
+            s.version = Some(version);
+        }
+    }
+
     /// 교환(Codex app-server account/read 등)에서 알아낸 계정 정보 반영
     pub fn set_account(&mut self, cli: CliId, account: AccountInfo) {
         if let Some(s) = self.map.get_mut(&cli) {

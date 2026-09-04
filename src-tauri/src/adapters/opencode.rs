@@ -197,6 +197,16 @@ impl CliAdapter for OpenCodeAdapter {
         })
     }
 
+    fn version_command(&self) -> Option<CommandSpec> {
+        Some(CommandSpec {
+            program: "opencode".into(),
+            args: vec!["--version".into()],
+            env: vec![],
+            cwd: String::new(),
+            stdin: None,
+        })
+    }
+
     fn login_flow(&self) -> Option<LoginFlow> {
         Some(LoginFlow::Console {
             spec: CommandSpec {
