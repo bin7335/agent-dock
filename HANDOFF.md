@@ -60,7 +60,7 @@ ode_modules\@anthropic-ai\claude-codein\claude.exe`, 220MB)를 스캔해 이 CL
 
 ## 다음 단계 (PRD 14장 "구현 현황"과 동일)
 
-1. (선택) OpenCode를 `opencode acp`로 전환(Gemini ACP 코드 공유, permission.bash=ask 시 승인 중계, usage_update 토큰 장부)
+1. (선택) OpenCode를 `opencode acp`로 전환(Gemini ACP 코드 공유; configOptions `model`·`mode`(build/plan)로 모델·읽기 전용 지정, sessionCapabilities resume/fork/list, permission.bash=ask 시 승인 중계, usage_update 토큰 장부)
 2. 2단계 자동 폴백: cooldown·429 시 handoff 패킷(`referenced_files` 포함) 생성 → 다음 ready CLI 실행, 무인 정책(쓰기 작업 Git 자동 체크포인트), 서킷 브레이커(동일 오류 3회 → blocked)
 3. Codex 모델별 한도 표시 여부, Antigravity plan 모드 명령 허용 규칙 검토, (선택) Claude 로그인 버튼 실제 재로그인 E2E
 4. 트레이 상주, SQLite 영속화(라우팅 체인·대화·작업·스냅샷), 폴더 잠금
