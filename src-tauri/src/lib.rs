@@ -421,7 +421,7 @@ async fn start_job(
     let adapter = adapter_for(cli)?;
     let job = make_job(request, project_dir, allow_writes, model);
     let spec = adapter.build_command(&job);
-    let follow_up = adapter.stdin_follow_up(&job);
+    let follow_up = adapter.stdin_follow_up(&job, None);
     spawn_run(app, state.inner(), cli, adapter, spec, follow_up).await
 }
 
@@ -442,7 +442,7 @@ async fn continue_job(
     let spec = adapter
         .build_resume_command(&job, &session_id)
         .ok_or_else(|| "이 CLI는 세션 재개를 지원하지 않습니다".to_string())?;
-    let follow_up = adapter.stdin_follow_up(&job);
+    let follow_up = adapter.stdin_follow_up(&job, Some(&session_id));
     spawn_run(app, state.inner(), cli, adapter, spec, follow_up).await
 }
 

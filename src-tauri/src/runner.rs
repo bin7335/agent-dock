@@ -12,6 +12,9 @@ use tokio::sync::{mpsc, Mutex};
 use crate::adapters::{strip_ansi, AgentEvent, CliAdapter, FollowUp};
 use crate::models::CommandSpec;
 
+/// 결과를 받은 뒤 stdin을 닫아도 안 끝나는 CLI(Gemini ACP)를 기다려 주는 시간. 지나면 죽이고 정상 종료로 본다
+const EXIT_GRACE: Duration = Duration::from_secs(5);
+
 /// 실행 이벤트 수신 콜백. run_id와 어댑터가 파싱한 이벤트를 받는다.
 pub type EventSink = Arc<dyn Fn(u64, AgentEvent) + Send + Sync>;
 
@@ -124,17 +127,23 @@ impl Runner {
             let procs = Arc::clone(&self.procs);
             tokio::spawn(async move {
                 let mut lines = BufReader::new(stdout).lines();
+                let mut exit_deadline: Option<tokio::time::Instant> = None;
+                let mut graceful_kill = false;
                 loop {
+                    let far = tokio::time::Instant::now() + Duration::from_secs(86_400);
                     tokio::select! {
                         maybe = lines.next_line() => match maybe {
                             Ok(Some(line)) => {
+                                let reaction = follow_up.as_ref().map(|f| f(&line)).unwrap_or_default();
                                 let mut finished = false;
-                                for ev in adapter.parse_event(&line) {
-                                    finished |= matches!(ev, AgentEvent::Completed { .. });
-                                    sink(run_id, ev);
+                                if !reaction.drop_events {
+                                    for ev in adapter.parse_event(&line) {
+                                        finished |= matches!(ev, AgentEvent::Completed { .. });
+                                        sink(run_id, ev);
+                                    }
                                 }
-                                // 어댑터가 이 줄에 답해야 하면(Codex turn/start) 열어 둔 stdin으로 보낸다
-                                if let Some(next) = follow_up.as_ref().and_then(|f| f(&line)) {
+                                // 어댑터가 이 줄에 답해야 하면(Codex turn/start 등) 열어 둔 stdin으로 보낸다
+                                if let Some(next) = reaction.send {
                                     if let Some(stdin) = stdin_slot.lock().await.as_mut() {
                                         let mut buf = next;
                                         buf.push('\n');
@@ -142,9 +151,10 @@ impl Runner {
                                         let _ = stdin.flush().await;
                                     }
                                 }
-                                // stream-json 입력 CLI는 stdin이 닫혀야 종료한다 — 결과가 오면 닫는다
+                                // stream-json 입력 CLI는 stdin이 닫혀야 종료한다 — 결과가 오면 닫고, 유예 뒤에도 살아 있으면 죽인다
                                 if finished && keep_open {
                                     stdin_slot.lock().await.take();
+                                    exit_deadline = Some(tokio::time::Instant::now() + EXIT_GRACE);
                                 }
                             }
                             _ => break,
@@ -153,9 +163,16 @@ impl Runner {
                             let _ = child.start_kill();
                             break;
                         }
+                        _ = tokio::time::sleep_until(exit_deadline.unwrap_or(far)) => {
+                            let _ = child.start_kill();
+                            graceful_kill = true;
+                            break;
+                        }
                     }
                 }
                 let code = child.wait().await.ok().and_then(|s| s.code());
+                // 완료 뒤 우리가 정리한 종료는 비정상으로 다루지 않는다
+                let code = if graceful_kill { Some(0) } else { code };
                 sink(
                     run_id,
                     AgentEvent::ProcessExited {

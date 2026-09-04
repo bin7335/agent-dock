@@ -1,8 +1,8 @@
 use serde_json::{json, Value};
 
 use super::{
-    line_has_id, probe_detail, AgentEvent, CliAdapter, FollowUp, LineExchange, LoginFlow,
-    ModelListing, PermissionContext, PermissionDecision,
+    line_has_id, probe_detail, AgentEvent, CliAdapter, FollowUp, LineExchange, LineReaction,
+    LoginFlow, ModelListing, PermissionContext, PermissionDecision,
 };
 use crate::availability::{
     window_name_for_minutes, AccountInfo, Evidence, ProbeOutcome, RateLimitReading,
@@ -178,15 +178,23 @@ impl CliAdapter for CodexAdapter {
     }
 
     /// thread/start·resume 응답(id=THREAD_REQ_ID)의 thread.id를 받으면 turn/start를 보낸다
-    fn stdin_follow_up(&self, job: &Job) -> Option<FollowUp> {
+    fn stdin_follow_up(&self, job: &Job, _session_id: Option<&str>) -> Option<FollowUp> {
         let request = job.request.clone();
         Some(Box::new(move |line: &str| {
-            let v: Value = serde_json::from_str(line).ok()?;
-            if v.get("method").is_some() || v.get("id").and_then(Value::as_u64) != Some(THREAD_REQ_ID) {
-                return None;
+            let send = (|| {
+                let v: Value = serde_json::from_str(line).ok()?;
+                if v.get("method").is_some()
+                    || v.get("id").and_then(Value::as_u64) != Some(THREAD_REQ_ID)
+                {
+                    return None;
+                }
+                let tid = v.pointer("/result/thread/id").and_then(Value::as_str)?;
+                Some(Self::turn_start_line(tid, &request))
+            })();
+            LineReaction {
+                send,
+                drop_events: false,
             }
-            let tid = v.pointer("/result/thread/id").and_then(Value::as_str)?;
-            Some(Self::turn_start_line(tid, &request))
         }))
     }
 
@@ -652,15 +660,15 @@ mod tests {
         assert_eq!(open["params"]["sandbox"], "workspace-write");
         assert!(open["params"].get("model").is_none());
 
-        let follow = CodexAdapter.stdin_follow_up(&job).unwrap();
+        let follow = CodexAdapter.stdin_follow_up(&job, None).unwrap();
         let reply = r#"{"id":2,"result":{"thread":{"id":"01a06c9c-9a1b-7f81-82df-0c77b60d4096","cwd":"D:\\dev"},"model":"gpt-5.6-sol"}}"#;
-        let turn: Value = serde_json::from_str(&follow(reply).unwrap()).unwrap();
+        let turn: Value = serde_json::from_str(&follow(reply).send.unwrap()).unwrap();
         assert_eq!(turn["id"], TURN_REQ_ID);
         assert_eq!(turn["method"], "turn/start");
         assert_eq!(turn["params"]["threadId"], "01a06c9c-9a1b-7f81-82df-0c77b60d4096");
         assert_eq!(turn["params"]["input"][0]["text"], "line one\nline two");
-        assert!(follow(r#"{"method":"thread/started","params":{"thread":{"id":"x"}}}"#).is_none());
-        assert!(follow(r#"{"id":1,"result":{"userAgent":"x"}}"#).is_none());
+        assert!(follow(r#"{"method":"thread/started","params":{"thread":{"id":"x"}}}"#).send.is_none());
+        assert!(follow(r#"{"id":1,"result":{"userAgent":"x"}}"#).send.is_none());
         // 세션 id는 같은 응답에서 나온다
         assert!(matches!(
             &CodexAdapter.parse_event(reply)[..],

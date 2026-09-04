@@ -45,9 +45,16 @@ pub enum AgentEvent {
     },
 }
 
-/// 실행 중 stdout 한 줄을 보고 stdin으로 이어 보낼 줄을 만드는 콜백
-/// (Codex: thread/start 응답의 thread.id를 받아야 turn/start를 보낼 수 있다)
-pub type FollowUp = Box<dyn Fn(&str) -> Option<String> + Send + Sync>;
+/// 실행 중 stdout 한 줄에 대한 어댑터의 반응: 이어 보낼 줄(Codex turn/start, Gemini session/prompt),
+/// 이 줄의 이벤트를 버릴지(Gemini session/load가 과거 대화를 다시 흘려보낼 때)
+#[derive(Default)]
+pub struct LineReaction {
+    pub send: Option<String>,
+    pub drop_events: bool,
+}
+
+/// 실행 중 stdout 한 줄을 보고 반응을 정하는 콜백. 상태가 필요하면 클로저 안에 Atomic으로 둔다
+pub type FollowUp = Box<dyn Fn(&str) -> LineReaction + Send + Sync>;
 
 /// 승인 응답을 만들 때 넘기는 원본 요청 (request_id, 도구 입력 JSON, 제안 JSON)
 pub struct PermissionContext<'a> {
@@ -173,7 +180,7 @@ pub trait CliAdapter: Send + Sync {
     }
 
     /// keeps_stdin_open CLI가 실행 중 stdout 줄에 반응해 stdin으로 보낼 줄을 만드는 콜백. 기본 없음
-    fn stdin_follow_up(&self, _job: &Job) -> Option<FollowUp> {
+    fn stdin_follow_up(&self, _job: &Job, _session_id: Option<&str>) -> Option<FollowUp> {
         None
     }
 

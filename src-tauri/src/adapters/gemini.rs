@@ -1,21 +1,33 @@
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use serde_json::{json, Value};
 
-use super::{line_has_id, AgentEvent, CliAdapter, LineExchange, LoginFlow, ModelListing};
+use super::{
+    line_has_id, AgentEvent, CliAdapter, FollowUp, LineExchange, LineReaction, LoginFlow,
+    ModelListing, PermissionContext, PermissionDecision,
+};
 use crate::availability::{AccountInfo, Evidence, ProbeOutcome};
 use crate::models::{CliId, CommandSpec, Job, ModelOption};
 
-/// Gemini CLI 어댑터.
-/// 실측 근거: `gemini -p -o stream-json --approval-mode ...` (스파이크 0, 2026-09-02).
-/// 사용량 신호가 없어 항상 추정(Estimated) 경로로 다룬다 — CLI 내부의 retrieveUserQuota는 대화형 화면 전용 (2026-09-04 재확인).
-/// probe·모델 목록·로그인은 ACP 모드(`gemini --acp`, JSON-RPC 2.0)로:
-/// `initialize`(agentInfo.version) → `session/new`(성공 = 인증 OK, 미인증이면 "Authentication required" 오류 — 번들의
-/// RequestError.authRequired 실측), `result.models.availableModels`, `authenticate{methodId:"oauth-personal"}`.
-/// 계정 표시는 `~/.gemini/settings.json`의 `security.auth.selectedType`(gemini-api-key / oauth-personal / vertex-ai)을 따른다.
-/// 프롬프트는 아직 인자로 넘기므로 줄바꿈이 든 메시지는 실행 단계에서 거부된다 (TODO: stdin 전달 실측).
+/// Gemini CLI 어댑터 — 대화도 ACP 모드(`gemini --acp`, JSON-RPC 2.0)로 돌린다.
+/// 실측(2026-09-04, 0.54.4): `initialize` → `session/new{cwd, mcpServers}`(응답 sessionId·modes·models) →
+/// `session/prompt{sessionId, prompt:[{type:"text", text}]}` → 알림 `session/update{update.sessionUpdate:
+/// agent_message_chunk|agent_thought_chunk|tool_call|tool_call_update|user_message_chunk|available_commands_update}`
+/// → 승인이 필요하면 서버 요청 `session/request_permission{id, params{options[{optionId, name, kind:
+/// allow_always|allow_once|reject_once}], toolCall{toolCallId, title, kind, content[diff], locations[path]}}}`
+/// (응답 `{id, result:{outcome:{outcome:"selected", optionId}}}`) → prompt 응답 `{stopReason}`.
+/// 재개는 `session/load{sessionId}`(과거 대화를 session/update로 다시 흘려보내므로 응답 전 알림은 버린다).
+/// stdin을 닫아도 프로세스가 안 끝나므로 러너가 유예 뒤 정리한다.
+/// 사용량 신호는 없어 항상 추정(Estimated) — retrieveUserQuota는 대화형 화면 전용 (2026-09-04 재확인).
+/// probe·모델 목록도 같은 ACP 교환(`session/new` 성공 = 인증 OK, 미인증이면 "Authentication required")을 쓴다.
+/// 계정 표시는 `~/.gemini/settings.json`의 `security.auth.selectedType`을 따른다.
+/// 주의: 이 계정(무료 API 키)은 429 백오프로 한 턴에 2분 넘게 걸리기도 한다 — 모델을 flash로 고정해도 그렇다.
 pub struct GeminiAdapter;
 
 const ACP_INIT_ID: u64 = 1;
 const ACP_SECOND_ID: u64 = 2;
+/// 대화 실행에서 session/prompt 요청 id. 응답이 오면 턴이 끝난 것
+const ACP_PROMPT_ID: u64 = 3;
 
 fn acp_spec() -> CommandSpec {
     CommandSpec {
@@ -117,6 +129,79 @@ fn local_account() -> Option<AccountInfo> {
     account_from_files(settings.as_deref(), accounts.as_deref())
 }
 
+impl GeminiAdapter {
+    /// ACP 대화 실행: `gemini --acp --approval-mode … [-m]` + stdin(initialize, open). session/prompt는 follow-up이 보낸다.
+    /// 쓰기 허용 = 편집 자동 승인·명령은 앱에 묻기(auto_edit), 읽기 전용 = plan (ACP modes 실측: default/autoEdit/yolo/plan)
+    fn run_spec(job: &Job, open: Value) -> CommandSpec {
+        let mut args = vec![
+            "--acp".to_string(),
+            "--approval-mode".into(),
+            if job.allow_writes { "auto_edit" } else { "plan" }.into(),
+        ];
+        if let Some(m) = job.model.as_deref().filter(|m| !m.is_empty()) {
+            args.push("-m".into());
+            args.push(m.to_string());
+        }
+        let mut stdin = acp_initialize();
+        stdin.push('\n');
+        stdin.push_str(&open.to_string());
+        stdin.push('\n');
+        CommandSpec {
+            program: "gemini".into(),
+            args,
+            // 비신뢰 폴더 헤드리스 거부(exit 55) 우회 — 스파이크 0 실측
+            env: vec![("GEMINI_CLI_TRUST_WORKSPACE".into(), "true".into())],
+            cwd: job.project_dir.clone(),
+            stdin: Some(stdin),
+        }
+    }
+
+    fn prompt_line(session_id: &str, request: &str) -> String {
+        json!({
+            "jsonrpc": "2.0",
+            "id": ACP_PROMPT_ID,
+            "method": "session/prompt",
+            "params": {"sessionId": session_id, "prompt": [{"type": "text", "text": request}]}
+        })
+        .to_string()
+    }
+
+    /// session/new·session/load 응답(id=ACP_SECOND_ID)을 기다렸다가 session/prompt를 보낸다.
+    /// resume이면 load 응답 전에 재생되는 session/update는 화면에 다시 그리지 않는다.
+    fn follow_up_for(request: String, resume: Option<String>) -> FollowUp {
+        let opened = AtomicBool::new(false);
+        Box::new(move |line: &str| {
+            let Ok(v) = serde_json::from_str::<Value>(line) else {
+                return LineReaction::default();
+            };
+            let is_open_reply = v.get("method").is_none()
+                && v.get("id").and_then(Value::as_u64) == Some(ACP_SECOND_ID);
+            if is_open_reply {
+                opened.store(true, Ordering::Relaxed);
+                if v.get("error").is_some() {
+                    return LineReaction::default();
+                }
+                let sid = v
+                    .pointer("/result/sessionId")
+                    .and_then(Value::as_str)
+                    .map(String::from)
+                    .or_else(|| resume.clone());
+                return LineReaction {
+                    send: sid.map(|s| Self::prompt_line(&s, &request)),
+                    drop_events: false,
+                };
+            }
+            let replaying = resume.is_some()
+                && !opened.load(Ordering::Relaxed)
+                && v.get("method").and_then(Value::as_str) == Some("session/update");
+            LineReaction {
+                send: None,
+                drop_events: replaying,
+            }
+        })
+    }
+}
+
 impl CliAdapter for GeminiAdapter {
     fn id(&self) -> CliId {
         CliId::Gemini
@@ -184,30 +269,91 @@ impl CliAdapter for GeminiAdapter {
         }
     }
 
-    /// 프롬프트는 stdin으로 넘긴다 (`-p ""`: "-p는 stdin 입력 뒤에 덧붙는다" 실측, 2026-09-04) —
-    /// gemini.cmd 셔임은 줄바꿈 인자를 못 받으므로 여러 줄·handoff 프롬프트를 위해 필요하다.
     fn build_command(&self, job: &Job) -> CommandSpec {
-        let approval = if job.allow_writes { "auto_edit" } else { "plan" };
-        let mut args = vec![
-            "-p".to_string(),
-            String::new(),
-            "-o".into(),
-            "stream-json".into(),
-            "--approval-mode".into(),
-            approval.into(),
-        ];
-        if let Some(m) = job.model.as_deref().filter(|m| !m.is_empty()) {
-            args.push("-m".into());
-            args.push(m.to_string());
+        Self::run_spec(
+            job,
+            json!({
+                "jsonrpc": "2.0",
+                "id": ACP_SECOND_ID,
+                "method": "session/new",
+                "params": {"cwd": job.project_dir, "mcpServers": []}
+            }),
+        )
+    }
+
+    /// ACP `session/load{sessionId}`로 같은 세션을 이어간다 (0.54.4 실측: loadSession 지원, 과거 대화 재생 뒤 응답)
+    fn build_resume_command(&self, job: &Job, session_id: &str) -> Option<CommandSpec> {
+        Some(Self::run_spec(
+            job,
+            json!({
+                "jsonrpc": "2.0",
+                "id": ACP_SECOND_ID,
+                "method": "session/load",
+                "params": {"sessionId": session_id, "cwd": job.project_dir, "mcpServers": []}
+            }),
+        ))
+    }
+
+    fn keeps_stdin_open(&self) -> bool {
+        true
+    }
+
+    /// gemini는 오류를 여러 줄짜리 객체 덤프(`Error handling request { id: 3, ... message: '...' }`)로 stderr에 쏟는다.
+    /// 제목 줄·code·message만 남기고 나머지 조각(`id: 3,`, `}`)은 버린다 (2026-09-04 실측: 일일 쿼터 소진 500 오류)
+    fn filter_stderr(&self, line: &str) -> Option<String> {
+        let t = line.trim();
+        if t.is_empty() {
+            return None;
         }
-        CommandSpec {
-            program: "gemini".into(),
-            args,
-            // 비신뢰 폴더 헤드리스 거부(exit 55) 우회 — 스파이크 0 실측
-            env: vec![("GEMINI_CLI_TRUST_WORKSPACE".into(), "true".into())],
-            cwd: job.project_dir.clone(),
-            stdin: Some(job.request.clone()),
-        }
+        let keep = t.starts_with("Error")
+            || t.starts_with("message:")
+            || t.starts_with("code:")
+            || t.contains("Error:")
+            || t.contains("error:");
+        keep.then(|| t.to_string())
+    }
+
+    fn stdin_follow_up(&self, job: &Job, session_id: Option<&str>) -> Option<FollowUp> {
+        Some(Self::follow_up_for(
+            job.request.clone(),
+            session_id.map(String::from),
+        ))
+    }
+
+    /// 서버 요청 id에 options 중 하나를 골라 답한다: 허용은 allow_once(기억이면 allow_always), 거부는 reject_once
+    fn permission_reply(
+        &self,
+        ctx: &PermissionContext,
+        decision: &PermissionDecision,
+    ) -> Option<String> {
+        let id: u64 = ctx.request_id.parse().ok()?;
+        let options: Vec<Value> = serde_json::from_str::<Value>(ctx.suggestions)
+            .ok()
+            .and_then(|v| v.as_array().cloned())
+            .unwrap_or_default();
+        let pick = |kinds: &[&str]| {
+            kinds.iter().find_map(|k| {
+                options
+                    .iter()
+                    .find(|o| o.get("kind").and_then(Value::as_str) == Some(k))
+                    .and_then(|o| o.get("optionId").and_then(Value::as_str))
+                    .map(String::from)
+            })
+        };
+        let option = if decision.allow {
+            if decision.remember {
+                pick(&["allow_always", "allow_once"])
+            } else {
+                pick(&["allow_once", "allow_always"])
+            }
+        } else {
+            pick(&["reject_once", "reject_always"])
+        };
+        let outcome = match option {
+            Some(option_id) => json!({"outcome": "selected", "optionId": option_id}),
+            None => json!({"outcome": "cancelled"}),
+        };
+        Some(json!({"jsonrpc": "2.0", "id": id, "result": {"outcome": outcome}}).to_string())
     }
 
     fn parse_event(&self, line: &str) -> Vec<AgentEvent> {
@@ -215,52 +361,136 @@ impl CliAdapter for GeminiAdapter {
             Ok(v) => v,
             Err(_) => return vec![],
         };
-        match v.get("type").and_then(Value::as_str).unwrap_or("") {
-            "init" => vec![AgentEvent::SessionStarted {
-                session_id: v
-                    .get("session_id")
+        let text = |o: &Value, k: &str| {
+            o.get(k)
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string()
+        };
+        // 요청 응답: session/new → 세션 id, session/prompt → 턴 종료, 오류 → 실패
+        if v.get("method").is_none() {
+            let Some(id) = v.get("id").and_then(Value::as_u64) else {
+                return vec![];
+            };
+            if let Some(err) = v.get("error") {
+                return vec![AgentEvent::Completed {
+                    ok: false,
+                    summary: format!("{} (요청 {id})", text(err, "message")),
+                }];
+            }
+            if id == ACP_SECOND_ID {
+                return v
+                    .pointer("/result/sessionId")
                     .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .to_string(),
-            }],
-            "message" => {
-                if v.get("role").and_then(Value::as_str) == Some("assistant") {
-                    vec![AgentEvent::Message {
-                        text: v
-                            .get("content")
+                    .map(|sid| {
+                        vec![AgentEvent::SessionStarted {
+                            session_id: sid.to_string(),
+                        }]
+                    })
+                    .unwrap_or_default();
+            }
+            if id == ACP_PROMPT_ID {
+                let stop = v
+                    .pointer("/result/stopReason")
+                    .and_then(Value::as_str)
+                    .unwrap_or("end_turn");
+                let ok = matches!(stop, "end_turn" | "max_turn_requests");
+                return vec![AgentEvent::Completed {
+                    ok,
+                    summary: if ok {
+                        String::new()
+                    } else {
+                        format!("stopReason {stop}")
+                    },
+                }];
+            }
+            return vec![];
+        }
+        let params = v.get("params").cloned().unwrap_or(Value::Null);
+        match v.get("method").and_then(Value::as_str).unwrap_or("") {
+            "session/update" => {
+                let u = params.get("update").cloned().unwrap_or(Value::Null);
+                match text(&u, "sessionUpdate").as_str() {
+                    "agent_message_chunk" => {
+                        let t = u
+                            .pointer("/content/text")
                             .and_then(Value::as_str)
+                            .unwrap_or_default();
+                        // 승인 뒤 오는 "[MODE_UPDATE] autoEdit" 같은 내부 알림은 본문이 아니다 (실측)
+                        if t.is_empty() || t.starts_with("[MODE_UPDATE]") {
+                            vec![]
+                        } else {
+                            vec![AgentEvent::Message {
+                                text: t.to_string(),
+                                delta: true,
+                            }]
+                        }
+                    }
+                    "tool_call" => vec![AgentEvent::ToolUse {
+                        tool: text(&u, "kind"),
+                        detail: text(&u, "title"),
+                    }],
+                    "tool_call_update" => {
+                        let status = text(&u, "status");
+                        if status != "completed" && status != "failed" {
+                            return vec![];
+                        }
+                        u.get("locations")
+                            .and_then(Value::as_array)
+                            .map(|ls| {
+                                ls.iter()
+                                    .filter_map(|l| l.get("path").and_then(Value::as_str))
+                                    .map(|p| AgentEvent::FileChange {
+                                        path: p.to_string(),
+                                        ok: status == "completed",
+                                    })
+                                    .collect()
+                            })
                             .unwrap_or_default()
-                            .to_string(),
-                        // Gemini는 assistant 메시지를 delta 조각으로 스트리밍한다 (스파이크 실측)
-                        delta: v.get("delta").and_then(Value::as_bool).unwrap_or(false),
-                    }]
-                } else {
-                    vec![]
+                    }
+                    _ => vec![],
                 }
             }
-            "tool_use" => vec![AgentEvent::ToolUse {
-                tool: v
-                    .get("tool_name")
+            "session/request_permission" => {
+                let request_id = match v.get("id") {
+                    Some(Value::Number(n)) => n.to_string(),
+                    Some(Value::String(s)) => s.clone(),
+                    _ => return vec![],
+                };
+                let tc = params.get("toolCall").cloned().unwrap_or(Value::Null);
+                let options = params
+                    .get("options")
+                    .cloned()
+                    .unwrap_or_else(|| json!([]));
+                let can_remember = options
+                    .as_array()
+                    .map(|a| {
+                        a.iter()
+                            .any(|o| o.get("kind").and_then(Value::as_str) == Some("allow_always"))
+                    })
+                    .unwrap_or(false);
+                let kind = text(&tc, "kind");
+                let title = text(&tc, "title");
+                let path = tc.pointer("/locations/0/path").and_then(Value::as_str);
+                let new_text = tc
+                    .pointer("/content/0/newText")
                     .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .to_string(),
-                detail: v.get("parameters").map(|p| p.to_string()).unwrap_or_default(),
-            }],
-            "result" => vec![AgentEvent::Completed {
-                ok: v.get("status").and_then(Value::as_str) == Some("success"),
-                summary: String::new(),
-            }],
+                    .map(|t| t.chars().take(2000).collect::<String>());
+                let mut input = json!({"title": title, "kind": kind, "file_path": path, "new_text": new_text});
+                if kind == "execute" {
+                    input["command"] = Value::String(title.clone());
+                }
+                vec![AgentEvent::PermissionRequest {
+                    request_id,
+                    tool: if kind.is_empty() { "tool".into() } else { kind },
+                    description: title,
+                    input: input.to_string(),
+                    can_remember,
+                    suggestions: options.to_string(),
+                }]
+            }
             _ => vec![],
         }
-    }
-
-    /// Gemini CLI의 --resume은 UUID가 아니라 "latest"/인덱스만 받는다 (--help 실측).
-    /// 같은 프로젝트의 직전 세션이 우리 실행이라는 전제로 latest를 쓴다 — MVP 한계 (ACP loadSession이 대안 후보).
-    fn build_resume_command(&self, job: &Job, _session_id: &str) -> Option<CommandSpec> {
-        let mut spec = self.build_command(job);
-        spec.args.push("--resume".into());
-        spec.args.push("latest".into());
-        Some(spec)
     }
 
     /// Google 개인 계정 OAuth(oauth-personal)는 2026-06-18부로 Gemini CLI에서 종료(IneligibleTierError, Antigravity로 이전).
@@ -405,8 +635,167 @@ mod tests {
         };
         let spec = GeminiAdapter.build_command(&job);
         assert!(spec.args.windows(2).any(|w| w == ["-m", "gemini-2.5-pro"]));
-        assert_eq!(spec.stdin.as_deref(), Some("hi"), "프롬프트는 stdin");
-        assert!(spec.args.windows(2).any(|w| w == ["-p", ""]));
-        assert!(!spec.args.iter().any(|a| a == "hi"));
+        assert!(spec.args.windows(2).any(|w| w == ["--approval-mode", "plan"]));
+        assert_eq!(spec.args[0], "--acp");
+        assert!(GeminiAdapter.keeps_stdin_open());
+        let stdin = spec.stdin.unwrap();
+        let lines: Vec<&str> = stdin.lines().collect();
+        assert_eq!(lines.len(), 2, "initialize + session/new; 프롬프트는 follow-up");
+        let open: Value = serde_json::from_str(lines[1]).unwrap();
+        assert_eq!(open["method"], "session/new");
+        assert_eq!(open["params"]["cwd"], "D:\\x");
+        assert!(!stdin.contains("\"hi\""));
+    }
+
+    fn job_with(request: &str, allow_writes: bool) -> Job {
+        Job {
+            id: 0,
+            title: "t".into(),
+            request: request.into(),
+            project_dir: "D:\\dev".into(),
+            profile: "코딩 작업".into(),
+            allow_writes,
+            unattended_ok: false,
+            status: JobStatus::Starting,
+            model: None,
+        }
+    }
+
+    const SESSION_NEW: &str = r#"{"jsonrpc":"2.0","id":2,"result":{"sessionId":"66deb839-cc3f-47e4-b93a-ac8e22fd75c6","modes":{"availableModes":[],"currentModeId":"autoEdit"},"models":{"availableModels":[],"currentModelId":"auto"}}}"#;
+
+    /// 2026-09-04 실측: session/new 응답 → session/prompt, session/load는 응답 전 재생 알림을 버린다
+    #[test]
+    fn acp_follow_up_sends_prompt_after_open() {
+        let job = job_with("line one\nline two", true);
+        let spec = GeminiAdapter.build_command(&job);
+        assert!(spec.args.windows(2).any(|w| w == ["--approval-mode", "auto_edit"]));
+        let follow = GeminiAdapter.stdin_follow_up(&job, None).unwrap();
+        let r = follow(SESSION_NEW);
+        let prompt: Value = serde_json::from_str(&r.send.unwrap()).unwrap();
+        assert_eq!(prompt["id"], ACP_PROMPT_ID);
+        assert_eq!(prompt["method"], "session/prompt");
+        assert_eq!(prompt["params"]["sessionId"], "66deb839-cc3f-47e4-b93a-ac8e22fd75c6");
+        assert_eq!(prompt["params"]["prompt"][0]["text"], "line one\nline two");
+        assert!(!r.drop_events);
+        assert!(matches!(
+            &GeminiAdapter.parse_event(SESSION_NEW)[..],
+            [AgentEvent::SessionStarted { session_id }] if session_id == "66deb839-cc3f-47e4-b93a-ac8e22fd75c6"
+        ));
+
+        // 재개: load 응답 전 session/update는 버리고, 응답에는 sessionId가 없어 넘겨받은 id로 prompt를 보낸다
+        let resume = GeminiAdapter.build_resume_command(&job, "66deb839").unwrap();
+        let open: Value = serde_json::from_str(resume.stdin.unwrap().lines().nth(1).unwrap()).unwrap();
+        assert_eq!(open["method"], "session/load");
+        assert_eq!(open["params"]["sessionId"], "66deb839");
+        let follow = GeminiAdapter.stdin_follow_up(&job, Some("66deb839")).unwrap();
+        let replay = r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"66deb839","update":{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"old"}}}}"#;
+        assert!(follow(replay).drop_events);
+        let loaded = r#"{"jsonrpc":"2.0","id":2,"result":{"modes":{"availableModes":[],"currentModeId":"autoEdit"},"models":{"availableModels":[],"currentModelId":"auto"}}}"#;
+        let r = follow(loaded);
+        assert!(!r.drop_events);
+        let prompt: Value = serde_json::from_str(&r.send.unwrap()).unwrap();
+        assert_eq!(prompt["params"]["sessionId"], "66deb839");
+        assert!(!follow(replay).drop_events, "load 응답 뒤의 알림은 정상 이벤트");
+        assert!(GeminiAdapter.parse_event(loaded).is_empty());
+    }
+
+    /// 2026-09-04 실측 알림·서버 요청(요약)
+    #[test]
+    fn acp_updates_and_permission_become_events() {
+        let chunk = GeminiAdapter.parse_event(
+            r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"done"}}}}"#,
+        );
+        assert!(matches!(&chunk[..], [AgentEvent::Message { text, delta: true }] if text == "done"));
+        assert!(GeminiAdapter
+            .parse_event(r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"[MODE_UPDATE] autoEdit"}}}}"#)
+            .is_empty());
+        assert!(GeminiAdapter
+            .parse_event(r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"agent_thought_chunk","content":{"type":"text","text":"hmm"}}}}"#)
+            .is_empty());
+        let call = GeminiAdapter.parse_event(
+            r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"tool_call","toolCallId":"write_file__call_1","status":"pending","title":"Writing to gemini_probe.txt","kind":"edit","locations":[{"path":"D:\\dev\\gemini_probe.txt"}]}}}"#,
+        );
+        assert!(matches!(&call[..], [AgentEvent::ToolUse { tool, detail }] if tool == "edit" && detail.starts_with("Writing")));
+        let update = GeminiAdapter.parse_event(
+            r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"tool_call_update","toolCallId":"write_file__call_1","status":"completed","title":"Writing to gemini_probe.txt","locations":[{"path":"D:\\dev\\gemini_probe.txt"}]}}}"#,
+        );
+        assert!(matches!(&update[..], [AgentEvent::FileChange { path, ok: true }] if path.ends_with("gemini_probe.txt")));
+
+        let perm = GeminiAdapter.parse_event(
+            r#"{"jsonrpc":"2.0","id":0,"method":"session/request_permission","params":{"sessionId":"s","options":[{"optionId":"proceed_always","name":"Allow for this session","kind":"allow_always"},{"optionId":"proceed_once","name":"Allow","kind":"allow_once"},{"optionId":"cancel","name":"Reject","kind":"reject_once"}],"toolCall":{"toolCallId":"write_file__call_1","status":"pending","title":"Writing to gemini_probe.txt","content":[{"type":"diff","path":"D:\\dev\\gemini_probe.txt","oldText":"","newText":"hi"}],"locations":[{"path":"D:\\dev\\gemini_probe.txt"}],"kind":"edit"}}}"#,
+        );
+        let (request_id, suggestions) = match &perm[..] {
+            [AgentEvent::PermissionRequest { request_id, tool, description, input, can_remember, suggestions }] => {
+                assert_eq!(request_id, "0");
+                assert_eq!(tool, "edit");
+                assert_eq!(description, "Writing to gemini_probe.txt");
+                let i: Value = serde_json::from_str(input).unwrap();
+                assert!(i["file_path"].as_str().unwrap().ends_with("gemini_probe.txt"));
+                assert_eq!(i["new_text"], "hi");
+                assert!(*can_remember);
+                (request_id.clone(), suggestions.clone())
+            }
+            other => panic!("unexpected {other:?}"),
+        };
+        let ctx = PermissionContext { request_id: &request_id, input: "{}", suggestions: &suggestions };
+        let reply = |allow, remember| {
+            let line = GeminiAdapter
+                .permission_reply(&ctx, &PermissionDecision { allow, remember, message: None })
+                .unwrap();
+            serde_json::from_str::<Value>(&line).unwrap()
+        };
+        assert_eq!(reply(true, false)["result"]["outcome"]["optionId"], "proceed_once");
+        assert_eq!(reply(true, true)["result"]["outcome"]["optionId"], "proceed_always");
+        assert_eq!(reply(false, false)["result"]["outcome"]["optionId"], "cancel");
+        assert_eq!(reply(false, false)["id"], 0);
+        assert_eq!(reply(false, false)["jsonrpc"], "2.0");
+
+        let exec = GeminiAdapter.parse_event(
+            r#"{"jsonrpc":"2.0","id":1,"method":"session/request_permission","params":{"sessionId":"s","options":[{"optionId":"proceed_once","name":"Allow","kind":"allow_once"},{"optionId":"cancel","name":"Reject","kind":"reject_once"}],"toolCall":{"toolCallId":"run_shell_command__call_2","status":"pending","title":"python -c \"print(7*6)\"","kind":"execute"}}}"#,
+        );
+        match &exec[..] {
+            [AgentEvent::PermissionRequest { tool, input, can_remember: false, .. }] => {
+                assert_eq!(tool, "execute");
+                let i: Value = serde_json::from_str(input).unwrap();
+                assert!(i["command"].as_str().unwrap().contains("print(7*6)"));
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+
+        let done = GeminiAdapter.parse_event(r#"{"jsonrpc":"2.0","id":3,"result":{"stopReason":"end_turn"}}"#);
+        assert!(matches!(&done[..], [AgentEvent::Completed { ok: true, .. }]));
+        let refused = GeminiAdapter.parse_event(r#"{"jsonrpc":"2.0","id":3,"result":{"stopReason":"refusal"}}"#);
+        assert!(matches!(&refused[..], [AgentEvent::Completed { ok: false, summary }] if summary.contains("refusal")));
+        let err = GeminiAdapter.parse_event(r#"{"jsonrpc":"2.0","id":2,"error":{"code":-32000,"message":"Authentication required."}}"#);
+        assert!(matches!(&err[..], [AgentEvent::Completed { ok: false, summary }] if summary.contains("Authentication")));
+    }
+
+    /// 2026-09-04 실측 stderr 덤프(일일 쿼터 소진)
+    #[test]
+    fn stderr_object_dump_is_folded() {
+        let dump = [
+            "Error handling request {",
+            "  id: 3,",
+            "  jsonrpc: '2.0',",
+            "  method: 'session/prompt',",
+            "  params: {",
+            "    prompt: [ [Object] ],",
+            "  }",
+            "} {",
+            "  code: 500,",
+            "  message: 'You have exhausted your daily quota on this model.',",
+            "  data: undefined",
+            "}",
+        ];
+        let kept: Vec<String> = dump.iter().filter_map(|l| GeminiAdapter.filter_stderr(l)).collect();
+        assert_eq!(
+            kept,
+            vec![
+                "Error handling request {".to_string(),
+                "code: 500,".to_string(),
+                "message: 'You have exhausted your daily quota on this model.',".to_string(),
+            ]
+        );
+        assert_eq!(GeminiAdapter.filter_stderr("TypeError: boom").as_deref(), Some("TypeError: boom"));
     }
 }
