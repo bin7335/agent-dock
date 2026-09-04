@@ -43,7 +43,7 @@ ode_modules\@anthropic-ai\claude-codein\claude.exe`, 220MB)를 스캔해 이 CL
 - Antigravity 앱 내 대화 E2E 통과(2026-09-04 21:16, 화면 자동 조작): 세션 재개·도구 호출 표시 확인. 읽기 전용(plan) 모드에서는 명령 실행 권한이 헤드리스에서 자동 거부되며 그 안내가 system 줄로 표시됨(쓰기 허용 시 --dangerously-skip-permissions). 사용량은 TUI `/usage`만 있어 헤드리스 신호 없음(추정 경로). AI Pro는 5시간 창 + 주간 상한
 - Gemini CLI는 개인 Google 로그인이 막혀(IneligibleTierError) API 키·flash 전용으로 남김. 필요 없으면 CLI 설정에서 끄기
 - 대화 중 CLI 전환 앱 E2E 통과: Claude(암호어 KIWI-77) → Antigravity 전환 후 암호어 정답 → Claude 복귀(기존 세션 재개, 그사이 대화 3항목 전달) → BACK_OK. OpenCode 앱 내 대화도 통과(OC_APP_OK)
-- Claude·Codex probe는 버전을 안 돌려줘 상세 패널이 "버전 ?" → `--version` 별도 probe 추가 여지
+- 버전은 어댑터별 `version_command`(`--version`) probe로 전 CLI 표시(2026-09-04)
 - Gemini 세션 재개는 UUID를 못 받아 `--resume latest` 의존
 - Gemini 텔레메트리(2026-09-04 검토, 미구현): `GEMINI_TELEMETRY_ENABLED=true` `GEMINI_TELEMETRY_TARGET=local` `GEMINI_TELEMETRY_OUTFILE=<경로>`(또는 프로젝트 settings.json `telemetry`)로 켜면 OTLP JSON에 `gemini_cli.api_error`(model_name, 429 본문 QuotaFailure.violations[].quotaId/…PerDay…|…PerMinute…, RetryInfo.retryDelay), `gemini_cli.api_response`(model, 토큰), `gemini_cli.flash_fallback`, `gemini_cli.model_routing` 기록. 이 계정은 무료 API 키라 pro가 limit 0 → 매번 429 후 flash 폴백. 모델별 한도 감지·장부의 재료
 - Gemini 사용량은 능동 조회 불가(2026-09-04 재확인): CLI가 내부적으로 Code Assist `retrieveUserQuota`를 불러 대화형 화면에만 표시하고, 헤드리스 stream-json·ACP(`gemini --acp`: initialize/session/new 정상) 어디에도 노출하지 않는다. OAuth 토큰은 평문 파일에 없음. 앱은 429·"exhausted your daily quota" 문구와 retry-after 값으로 반응적 쿨다운만 잡는다. ACP는 `loadSession:true`·세션 id를 주므로 `--resume latest` 한계의 대안 후보
@@ -51,15 +51,15 @@ ode_modules\@anthropic-ai\claude-codein\claude.exe`, 220MB)를 스캔해 이 CL
 - Codex 모델별 한도(`rateLimitsByLimitId`, 5시간·7일 윈도우)는 아직 표시하지 않고 계정 단위 `rateLimits`만 쓴다
 - 라우팅 체인은 localStorage에만 저장(SQLite 배선 전). 폴더 잠금(`Runner::running_count`)도 미배선
 - 폴더당 동시 1개 잠금(`Runner::running_count`)·SQLite 영속화 미배선
-- 각 CLI 로그인 버튼 E2E 미수행(계정이 전부 로그인 상태). Gemini ACP authenticate는 브라우저 로그인 흐름이 실제로 동작함을 확인(2026-09-04, 단 Gemini CLI 개인 계정은 종료 상태)
+- 로그인 버튼 E2E 통과(2026-09-04 21:30~22:01): Codex 로그아웃 → 전체 재검사(빨강) → 버튼 → 콘솔 `codex login` → 브라우저 로그인 → Ready 복귀. 콘솔이 열린 동안 8초마다 재검사(LOGIN_POLL), 스크립트 끝 `exit`로 창 자동 닫힘, 러너가 찾은 실행 파일 경로를 `call`(콘솔 PATH에 winget `agy` 없음). OpenCode(콘솔 열린 채 확인)·Antigravity(콘솔 닫힘) 경로도 통과. Claude는 이 개발 세션이 같은 로그인을 쓰고 있어 로그아웃 E2E 생략. Gemini 버튼은 `gemini` 콘솔 + `/auth` API 키 안내(개인 OAuth 종료)
 - OpenCode `--agent plan`이 읽기 전용 내장 에이전트라는 전제
 - 슬래시 명령·스킬(2026-09-04 실측): Claude 커스텀 명령·스킬은 stdin 프롬프트로도 동작(앱에서 `/trigger` 등 OK), Gemini 커스텀 명령 OK, Codex 스킬은 `$이름` 언급, OpenCode run 모드는 `/이름` 미확장. 내장 UI 명령(`/help` `/model` `/auth`…)은 전부 대화형 전용 → 앱 기능(모델 선택·로그인·상태바)으로 대체
 - 보류: 설정 패널 "CLI 추가"(범용 사용자 정의 어댑터). CliId enum → 문자열 id 리팩터링이 선행 과제
-- E2E 자동화 메모: DPI 비인식 프로세스의 `CopyFromScreen`은 125% 모니터에서 캡처가 잘린다(`SetProcessDPIAware` 선행). PowerShell 변수는 대소문자를 구분하지 않아 `$h`/`$H`가 충돌한다. 한글 IME 상태의 `SendKeys`는 자모로 입력되므로 `Set-Clipboard` + `^v`로 붙여넣는다
+- E2E 자동화 메모: DPI 비인식 프로세스의 `CopyFromScreen`은 125% 모니터에서 캡처가 잘린다(`SetProcessDPIAware` 선행). PowerShell 변수는 대소문자를 구분하지 않아 `$h`/`$H`가 충돌한다. 한글 IME 상태의 `SendKeys`는 자모로 입력되므로 `Set-Clipboard` + `^v`로 붙여넣는다. PowerShell `-match`는 대소문자를 무시하므로 "Not logged in"이 `Logged in`에 걸린다(`-cmatch`). 콘솔 창은 conhost 소유라 cmd 프로세스의 MainWindowHandle이 0이다
 
 ## 다음 단계 (PRD 14장 "구현 현황"과 동일)
 
 1. 승인 실시간 중계(`--input-format stream-json`) 검증
 2. 2단계 자동 폴백: cooldown·429 시 handoff 패킷(`referenced_files` 포함) 생성 → 다음 ready CLI 실행, 무인 정책(쓰기 작업 Git 자동 체크포인트), 서킷 브레이커(동일 오류 3회 → blocked)
-3. Codex·Gemini 프롬프트 stdin 전달 실측·전환, Claude/Codex `--version` probe, Codex stderr 진단 로그 접기, 모델별 한도 표시 여부
+3. Codex stderr 진단 로그 접기, Codex 모델별 한도 표시 여부, Antigravity plan 모드 명령 허용 규칙 검토, (선택) Claude 로그인 버튼 실제 재로그인 E2E
 4. 트레이 상주, SQLite 영속화(라우팅 체인·대화·작업·스냅샷), 폴더 잠금
