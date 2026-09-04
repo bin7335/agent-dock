@@ -43,6 +43,7 @@ ode_modules\@anthropic-ai\claude-codein\claude.exe`, 220MB)를 스캔해 이 CL
 - 대화 중 CLI 전환은 앱 UI 기준 E2E 미수행(handoff 문단으로 Claude→Codex 암호어 전달은 CLI 직접 호출로 검증)
 - Claude·Codex probe는 버전을 안 돌려줘 상세 패널이 "버전 ?" → `--version` 별도 probe 추가 여지
 - Gemini 세션 재개는 UUID를 못 받아 `--resume latest` 의존
+- Gemini 텔레메트리(2026-09-04 검토, 미구현): `GEMINI_TELEMETRY_ENABLED=true` `GEMINI_TELEMETRY_TARGET=local` `GEMINI_TELEMETRY_OUTFILE=<경로>`(또는 프로젝트 settings.json `telemetry`)로 켜면 OTLP JSON에 `gemini_cli.api_error`(model_name, 429 본문 QuotaFailure.violations[].quotaId/…PerDay…|…PerMinute…, RetryInfo.retryDelay), `gemini_cli.api_response`(model, 토큰), `gemini_cli.flash_fallback`, `gemini_cli.model_routing` 기록. 이 계정은 무료 API 키라 pro가 limit 0 → 매번 429 후 flash 폴백. 모델별 한도 감지·장부의 재료
 - Gemini 사용량은 능동 조회 불가(2026-09-04 재확인): CLI가 내부적으로 Code Assist `retrieveUserQuota`를 불러 대화형 화면에만 표시하고, 헤드리스 stream-json·ACP(`gemini --acp`: initialize/session/new 정상) 어디에도 노출하지 않는다. OAuth 토큰은 평문 파일에 없음. 앱은 429·"exhausted your daily quota" 문구와 retry-after 값으로 반응적 쿨다운만 잡는다. ACP는 `loadSession:true`·세션 id를 주므로 `--resume latest` 한계의 대안 후보
 - Codex stderr 진단 로그가 채팅 system 라인으로 노출 — 필터/접기 필요
 - Codex 모델별 한도(`rateLimitsByLimitId`, 5시간·7일 윈도우)는 아직 표시하지 않고 계정 단위 `rateLimits`만 쓴다
