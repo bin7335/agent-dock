@@ -1,0 +1,434 @@
+:root {
+  font-family: "Segoe UI", "Malgun Gothic", Inter, sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+  color: #e4e6eb;
+  background-color: #16181d;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+}
+
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  padding: 10px;
+  gap: 10px;
+}
+
+/* ── 상단 CLI 상태 카드 ─────────────────────────── */
+.cli-row {
+  display: flex;
+  gap: 8px;
+}
+
+.cli-card {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: 8px;
+  background: #21242c;
+  border: 1px solid #2e323c;
+}
+
+.cli-name {
+  font-weight: 600;
+}
+
+.cli-state {
+  color: #9aa0ab;
+}
+
+/* 상태 색은 색+텍스트 병기 원칙 (PRD 7장) — 색은 dot에만 */
+.dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: #6b7280;
+  flex: none;
+}
+.state-available .dot { background: #34c26b; }
+.state-degraded .dot { background: #e4b400; }
+.state-cooldown .dot { background: #f2762e; }
+.state-auth_required .dot { background: #e05252; }
+.state-unavailable .dot { background: #e05252; }
+.state-unknown .dot { background: #6b7280; }
+
+.evidence {
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 6px;
+  background: #2e323c;
+  color: #9aa0ab;
+}
+.evidence-official { color: #7dc4ff; }
+.evidence-estimated { color: #e4b400; }
+
+/* ── 본문: 큐 + 현재 실행 ───────────────────────── */
+.main {
+  display: grid;
+  grid-template-columns: 260px 1fr;
+  gap: 10px;
+  flex: 1;
+  min-height: 0;
+}
+
+.panel {
+  background: #1c1f26;
+  border: 1px solid #2e323c;
+  border-radius: 10px;
+  padding: 12px;
+  overflow: auto;
+}
+
+.panel h2 {
+  margin: 0 0 10px;
+  font-size: 15px;
+}
+
+.queue ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.queue li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 8px;
+  border-radius: 7px;
+  cursor: pointer;
+}
+
+.queue li:hover {
+  background: #242832;
+}
+
+.queue li.selected {
+  background: #2a3040;
+}
+
+.job-index {
+  color: #9aa0ab;
+}
+
+.job-title {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.job-status {
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 6px;
+  background: #2e323c;
+  color: #9aa0ab;
+}
+.js-running { color: #34c26b; }
+.js-waiting_approval, .js-handoff_pending { color: #e4b400; }
+.js-failed, .js-blocked { color: #e05252; }
+
+.run-meta {
+  color: #9aa0ab;
+  margin: 0 0 10px;
+}
+
+.unattended {
+  color: #7dc4ff;
+}
+
+.empty {
+  color: #6b7280;
+}
+
+/* 실행 로그 (백엔드 배선 후 가상 스크롤로 교체 예정 — PRD 5장) */
+.log {
+  font-family: Consolas, "D2Coding", monospace;
+  font-size: 12.5px;
+  background: #14161b;
+  border-radius: 8px;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.log-ts {
+  color: #6b7280;
+  margin-right: 8px;
+}
+
+.lk-tool_use { color: #7dc4ff; }
+.lk-file_change { color: #c69cf0; }
+.lk-system { color: #9aa0ab; }
+
+/* ── 툴바 ──────────────────────────────────────── */
+.toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.routing {
+  color: #9aa0ab;
+}
+
+.actions {
+  display: flex;
+  gap: 6px;
+}
+
+button {
+  border: 1px solid #2e323c;
+  border-radius: 7px;
+  padding: 6px 12px;
+  font-size: 13px;
+  font-family: inherit;
+  color: #e4e6eb;
+  background: #21242c;
+  cursor: pointer;
+}
+
+button:hover {
+  border-color: #4a5160;
+}
+
+button.toggle.on {
+  border-color: #34c26b;
+  color: #34c26b;
+}
+
+/* ── 하단 고정 한도 상태바 (PRD 7장) ─────────────── */
+.statusbar {
+  display: flex;
+  gap: 8px;
+  padding: 6px 8px;
+  background: #1c1f26;
+  border: 1px solid #2e323c;
+  border-radius: 8px;
+  font-size: 12.5px;
+}
+
+.statusbar-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 8px;
+  border-radius: 6px;
+  cursor: default;
+}
+
+.sb-util {
+  font-weight: 600;
+}
+
+.sb-reset {
+  color: #9aa0ab;
+}
+
+/* ── 새 작업 폼 ─────────────────────────────────── */
+.job-form textarea,
+.job-form input,
+.job-form select {
+  border: 1px solid #2e323c;
+  border-radius: 7px;
+  padding: 7px 10px;
+  font-size: 13px;
+  font-family: inherit;
+  color: #e4e6eb;
+  background: #14161b;
+}
+
+.job-form textarea {
+  width: 100%;
+  resize: vertical;
+  margin-bottom: 8px;
+}
+
+.form-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.form-row input {
+  flex: 1;
+}
+
+.check {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  color: #9aa0ab;
+  white-space: nowrap;
+}
+
+.error {
+  color: #e05252;
+  margin: 8px 0 0;
+}
+
+button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.lk-stderr {
+  color: #e05252;
+}
+
+/* ── 채팅 패널 ─────────────────────────────────── */
+.panel.chat {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.panel-head h2 {
+  margin: 0;
+}
+
+button.small {
+  padding: 3px 8px;
+  font-size: 12px;
+}
+
+.transcript {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 4px 2px;
+}
+
+.msg {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  max-width: 85%;
+}
+
+.msg-ts {
+  color: #6b7280;
+  font-size: 11px;
+  padding-top: 6px;
+  flex: none;
+}
+
+.msg-text {
+  white-space: pre-wrap;
+  word-break: break-word;
+  padding: 8px 12px;
+  border-radius: 12px;
+  line-height: 1.5;
+}
+
+.role-user {
+  align-self: flex-end;
+  flex-direction: row-reverse;
+}
+
+.role-user .msg-text {
+  background: #2a3a5c;
+  border-bottom-right-radius: 4px;
+}
+
+.role-assistant .msg-text {
+  background: #242832;
+  border-bottom-left-radius: 4px;
+}
+
+.role-tool .msg-text,
+.role-system .msg-text {
+  font-family: Consolas, "D2Coding", monospace;
+  font-size: 12px;
+  padding: 3px 8px;
+  border-radius: 6px;
+  color: #9aa0ab;
+  background: transparent;
+}
+
+.role-tool .msg-text {
+  color: #7dc4ff;
+}
+
+.role-error .msg-text {
+  background: #3a2224;
+  color: #f0a0a0;
+}
+
+.composer {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+  align-items: stretch;
+}
+
+.composer textarea {
+  flex: 1;
+  border: 1px solid #2e323c;
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 13px;
+  font-family: inherit;
+  color: #e4e6eb;
+  background: #14161b;
+  resize: none;
+}
+
+.composer textarea:disabled {
+  opacity: 0.6;
+}
+
+/* ── 툴바 설정 영역 ───────────────────────────── */
+.settings {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  min-width: 0;
+  flex: 1;
+}
+
+.settings select {
+  border: 1px solid #2e323c;
+  border-radius: 7px;
+  padding: 6px 8px;
+  font-size: 13px;
+  font-family: inherit;
+  color: #e4e6eb;
+  background: #14161b;
+}
+
+.folder-btn {
+  max-width: 420px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+}
