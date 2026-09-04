@@ -45,6 +45,10 @@ pub enum AgentEvent {
     },
 }
 
+/// 실행 중 stdout 한 줄을 보고 stdin으로 이어 보낼 줄을 만드는 콜백
+/// (Codex: thread/start 응답의 thread.id를 받아야 turn/start를 보낼 수 있다)
+pub type FollowUp = Box<dyn Fn(&str) -> Option<String> + Send + Sync>;
+
 /// 승인 응답을 만들 때 넘기는 원본 요청 (request_id, 도구 입력 JSON, 제안 JSON)
 pub struct PermissionContext<'a> {
     pub request_id: &'a str,
@@ -160,6 +164,17 @@ pub trait CliAdapter: Send + Sync {
     /// 실행 중 stdin을 열어 두는지 (승인 응답 같은 후속 줄을 보내는 CLI). 기본 false — 프롬프트를 쓰고 닫는다
     fn keeps_stdin_open(&self) -> bool {
         false
+    }
+
+    /// stderr 한 줄을 화면에 보일지·어떻게 줄일지. None이면 버린다. 기본은 그대로 통과
+    /// (Codex는 tracing 진단 로그를 stderr에 쏟으므로 ERROR·WARN만 남긴다)
+    fn filter_stderr(&self, line: &str) -> Option<String> {
+        Some(line.to_string())
+    }
+
+    /// keeps_stdin_open CLI가 실행 중 stdout 줄에 반응해 stdin으로 보낼 줄을 만드는 콜백. 기본 없음
+    fn stdin_follow_up(&self, _job: &Job) -> Option<FollowUp> {
+        None
     }
 
     /// 승인 요청에 대한 응답 줄(stdin으로 보냄). 승인 중계를 지원하지 않는 CLI는 None

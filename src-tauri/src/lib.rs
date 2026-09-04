@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use adapters::{
-    line_has_id, AgentEvent, CliAdapter, LoginFlow, ModelListing, PermissionContext,
+    line_has_id, AgentEvent, CliAdapter, FollowUp, LoginFlow, ModelListing, PermissionContext,
     PermissionDecision,
 };
 use availability::{
@@ -389,6 +389,7 @@ async fn spawn_run(
     cli: CliId,
     adapter: Arc<dyn CliAdapter>,
     spec: CommandSpec,
+    follow_up: Option<FollowUp>,
 ) -> Result<u64, String> {
     let monitor = Arc::clone(&state.monitor);
     let pending = Arc::clone(&state.pending);
@@ -401,7 +402,7 @@ async fn spawn_run(
     });
     state
         .runner
-        .start(spec, adapter, sink)
+        .start(spec, adapter, sink, follow_up)
         .await
         .map_err(|e| e.to_string())
 }
@@ -418,8 +419,10 @@ async fn start_job(
     model: Option<String>,
 ) -> Result<u64, String> {
     let adapter = adapter_for(cli)?;
-    let spec = adapter.build_command(&make_job(request, project_dir, allow_writes, model));
-    spawn_run(app, state.inner(), cli, adapter, spec).await
+    let job = make_job(request, project_dir, allow_writes, model);
+    let spec = adapter.build_command(&job);
+    let follow_up = adapter.stdin_follow_up(&job);
+    spawn_run(app, state.inner(), cli, adapter, spec, follow_up).await
 }
 
 /// 기존 세션을 이어 후속 메시지를 보낸다. 반환값은 run_id.
@@ -435,13 +438,12 @@ async fn continue_job(
     model: Option<String>,
 ) -> Result<u64, String> {
     let adapter = adapter_for(cli)?;
+    let job = make_job(request, project_dir, allow_writes, model);
     let spec = adapter
-        .build_resume_command(
-            &make_job(request, project_dir, allow_writes, model),
-            &session_id,
-        )
+        .build_resume_command(&job, &session_id)
         .ok_or_else(|| "이 CLI는 세션 재개를 지원하지 않습니다".to_string())?;
-    spawn_run(app, state.inner(), cli, adapter, spec).await
+    let follow_up = adapter.stdin_follow_up(&job);
+    spawn_run(app, state.inner(), cli, adapter, spec, follow_up).await
 }
 
 /// 실행 중인 run을 중지한다.

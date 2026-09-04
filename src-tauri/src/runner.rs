@@ -9,7 +9,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::{mpsc, Mutex};
 
-use crate::adapters::{AgentEvent, CliAdapter};
+use crate::adapters::{strip_ansi, AgentEvent, CliAdapter, FollowUp};
 use crate::models::CommandSpec;
 
 /// 실행 이벤트 수신 콜백. run_id와 어댑터가 파싱한 이벤트를 받는다.
@@ -56,6 +56,7 @@ impl Runner {
         spec: CommandSpec,
         adapter: Arc<dyn CliAdapter>,
         sink: EventSink,
+        follow_up: Option<FollowUp>,
     ) -> std::io::Result<u64> {
         let mut cmd = os_command(&spec);
         cmd.stdin(if spec.stdin.is_some() {
@@ -107,10 +108,14 @@ impl Runner {
 
         {
             let sink = Arc::clone(&sink);
+            let adapter = Arc::clone(&adapter);
             tokio::spawn(async move {
                 let mut lines = BufReader::new(stderr).lines();
                 while let Ok(Some(line)) = lines.next_line().await {
-                    sink(run_id, AgentEvent::Stderr { text: line });
+                    // ANSI 색상을 걷어내고 어댑터가 진단 로그를 거른 뒤에만 화면으로 보낸다
+                    if let Some(text) = adapter.filter_stderr(&strip_ansi(&line)) {
+                        sink(run_id, AgentEvent::Stderr { text });
+                    }
                 }
             });
         }
@@ -127,6 +132,15 @@ impl Runner {
                                 for ev in adapter.parse_event(&line) {
                                     finished |= matches!(ev, AgentEvent::Completed { .. });
                                     sink(run_id, ev);
+                                }
+                                // 어댑터가 이 줄에 답해야 하면(Codex turn/start) 열어 둔 stdin으로 보낸다
+                                if let Some(next) = follow_up.as_ref().and_then(|f| f(&line)) {
+                                    if let Some(stdin) = stdin_slot.lock().await.as_mut() {
+                                        let mut buf = next;
+                                        buf.push('\n');
+                                        let _ = stdin.write_all(buf.as_bytes()).await;
+                                        let _ = stdin.flush().await;
+                                    }
                                 }
                                 // stream-json 입력 CLI는 stdin이 닫혀야 종료한다 — 결과가 오면 닫는다
                                 if finished && keep_open {
@@ -427,7 +441,7 @@ mod tests {
                 events.lock().unwrap().push(ev);
             })
         };
-        runner.start(spec, adapter, sink).await.unwrap();
+        runner.start(spec, adapter, sink, None).await.unwrap();
         for _ in 0..300 {
             if events
                 .lock()
@@ -473,7 +487,7 @@ mod tests {
             stdin: None,
         };
         runner
-            .start(spec, Arc::new(ClaudeAdapter), sink)
+            .start(spec, Arc::new(ClaudeAdapter), sink, None)
             .await
             .unwrap();
 
