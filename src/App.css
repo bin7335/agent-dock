@@ -516,3 +516,39 @@ button.small {
 .sb-detail .error {
   margin-top: 4px;
 }
+
+/* ── 상단 카드 드래그 정렬 (우선순위 = 라우팅 체인) ── */
+.cli-card {
+  cursor: grab;
+  user-select: none;
+}
+
+.cli-card:active {
+  cursor: grabbing;
+}
+
+.cli-card.dragging {
+  opacity: 0.45;
+}
+
+.cli-card.drag-over {
+  border-color: #7dc4ff;
+  box-shadow: inset 3px 0 0 #7dc4ff;
+}
+
+.prio {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #2e323c;
+  color: #9aa0ab;
+  font-size: 11px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+}
+
+.cli-card.current .prio {
+  color: #e4e6eb;
+}

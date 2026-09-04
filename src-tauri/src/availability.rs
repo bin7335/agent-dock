@@ -245,6 +245,22 @@ impl AvailabilityMonitor {
         self.order.clone()
     }
 
+    /// 라우팅 우선순위 변경에 맞춰 스냅샷 순서를 바꾼다. 목록에 없는 기존 CLI는 뒤에 붙이고 모르는 CLI는 무시한다.
+    pub fn set_order(&mut self, order: &[CliId]) {
+        let mut next: Vec<CliId> = Vec::new();
+        for c in order {
+            if self.map.contains_key(c) && !next.contains(c) {
+                next.push(*c);
+            }
+        }
+        for c in &self.order {
+            if !next.contains(c) {
+                next.push(*c);
+            }
+        }
+        self.order = next;
+    }
+
     /// 라우팅 체인 순서대로 스냅샷을 돌려준다 (상태바 순서 = 우선순위, PRD 7장)
     pub fn snapshots(&self) -> Vec<AvailabilitySnapshot> {
         self.order
@@ -609,6 +625,15 @@ mod tests {
             Some(1_725_436_800)
         );
         assert_eq!(extract_reset_epoch("no epoch here 12345"), None);
+    }
+
+    #[test]
+    fn set_order_reorders_and_keeps_unlisted() {
+        let mut m = monitor();
+        m.set_order(&[CliId::Gemini, CliId::Opencode, CliId::Claude]);
+        let order: Vec<CliId> = m.snapshots().iter().map(|s| s.cli).collect();
+        assert_eq!(order, vec![CliId::Gemini, CliId::Claude, CliId::Codex]);
+        assert_eq!(m.clis(), order);
     }
 
     #[test]

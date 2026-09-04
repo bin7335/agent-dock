@@ -39,6 +39,16 @@ const WINDOW_LABEL: Record<string, string> = {
 
 const STORAGE_DIR = "agentdock.projectDir";
 const STORAGE_CLI = "agentdock.cli";
+const STORAGE_CHAIN = "agentdock.chain";
+
+const ALL_CLIS: CliId[] = ["codex", "claude", "gemini", "opencode"];
+
+function parseChain(raw: string): CliId[] {
+  return raw
+    .split(",")
+    .map((s) => s.trim())
+    .filter((s): s is CliId => (ALL_CLIS as string[]).includes(s));
+}
 
 type Role = "user" | "assistant" | "tool" | "system" | "error";
 
@@ -185,6 +195,8 @@ function App() {
   const [recommended, setRecommended] = useState<CliId | null>(null);
   const [detailCli, setDetailCli] = useState<CliId | null>(null);
   const [rechecking, setRechecking] = useState(false);
+  const [dragging, setDragging] = useState<CliId | null>(null);
+  const [dragOver, setDragOver] = useState<CliId | null>(null);
   const [convs, setConvs] = useState<Conversation[]>([]);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [projectDir, setProjectDir] = useState<string>(() => loadStored(STORAGE_DIR, ""));
@@ -222,11 +234,13 @@ function App() {
     };
   }, []);
 
-  // 가용성: 시작 시 한 번 읽고, 이후는 모니터가 밀어주는 이벤트로 갱신
+  // 가용성: 시작 시 한 번 읽고(저장된 우선순위가 있으면 먼저 적용), 이후는 모니터가 밀어주는 이벤트로 갱신
   useEffect(() => {
-    invoke<AvailabilitySnapshot[]>("get_availability")
-      .then(setStatuses)
-      .catch((e) => setError(String(e)));
+    const stored = parseChain(loadStored(STORAGE_CHAIN, ""));
+    const initial = stored.length
+      ? invoke<AvailabilitySnapshot[]>("set_routing_chain", { chain: stored })
+      : invoke<AvailabilitySnapshot[]>("get_availability");
+    initial.then(setStatuses).catch((e) => setError(String(e)));
     const un = listen<AvailabilitySnapshot[]>("availability-changed", ({ payload }) => setStatuses(payload));
     return () => {
       un.then((f) => f());
@@ -261,6 +275,27 @@ function App() {
     } catch (e) {
       setError(String(e));
     }
+  }
+
+  /** 상단 카드 드래그 결과를 라우팅 체인으로 반영한다. 상태바·추천도 백엔드 응답 순서를 따른다. */
+  async function applyChain(chain: CliId[]) {
+    try {
+      const snaps = await invoke<AvailabilitySnapshot[]>("set_routing_chain", { chain });
+      setStatuses(snaps);
+      store(STORAGE_CHAIN, snaps.map((s) => s.cli).join(","));
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
+  function dropOn(target: CliId) {
+    const from = dragging;
+    setDragging(null);
+    setDragOver(null);
+    if (!from || from === target) return;
+    const order = cliOrder.filter((c) => c !== from);
+    order.splice(cliOrder.indexOf(target), 0, from);
+    void applyChain(order);
   }
 
   async function recheck(target: CliId | null) {
@@ -338,8 +373,8 @@ function App() {
 
   return (
     <div className="app">
-      <header className="cli-row">
-        {cliOrder.map((id) => {
+      <header className="cli-row" title="카드를 드래그해 라우팅 우선순위를 바꿉니다">
+        {cliOrder.map((id, i) => {
           const s = statuses.find((x) => x.cli === id);
           const state = s?.state ?? "unknown";
           const evidence = s?.evidence ?? "estimated";
@@ -347,9 +382,30 @@ function App() {
           return (
             <div
               key={id}
-              className={`cli-card state-${state}${id === cli ? " current" : ""}`}
-              title={s?.version ? `버전 ${s.version}` : undefined}
+              className={`cli-card state-${state}${id === cli ? " current" : ""}${dragging === id ? " dragging" : ""}${dragOver === id && dragging !== id ? " drag-over" : ""}`}
+              title={`${i + 1}순위${s?.version ? ` · 버전 ${s.version}` : ""} · 드래그해서 순서 변경`}
+              draggable
+              onDragStart={(e) => {
+                e.dataTransfer.effectAllowed = "move";
+                e.dataTransfer.setData("text/plain", id);
+                setDragging(id);
+              }}
+              onDragOver={(e) => {
+                e.preventDefault();
+                e.dataTransfer.dropEffect = "move";
+                if (dragOver !== id) setDragOver(id);
+              }}
+              onDragLeave={() => setDragOver((v) => (v === id ? null : v))}
+              onDrop={(e) => {
+                e.preventDefault();
+                dropOn(id);
+              }}
+              onDragEnd={() => {
+                setDragging(null);
+                setDragOver(null);
+              }}
             >
+              <span className="prio">{i + 1}</span>
               <span className="dot" />
               <span className="cli-name">{CLI_LABEL[id]}</span>
               <span className="cli-state">{STATE_LABEL[state]}</span>

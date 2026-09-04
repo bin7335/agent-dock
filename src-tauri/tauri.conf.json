@@ -12,9 +12,10 @@
   "app": {
     "windows": [
       {
-        "title": "agent-dock",
-        "width": 800,
-        "height": 600
+        "title": "Agent Dock",
+        "width": 1100,
+        "height": 760,
+        "dragDropEnabled": false
       }
     ],
     "security": {

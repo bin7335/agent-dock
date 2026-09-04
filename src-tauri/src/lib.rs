@@ -24,7 +24,8 @@ const TICK_INTERVAL: Duration = Duration::from_secs(30);
 struct AppState {
     runner: Arc<runner::Runner>,
     monitor: Arc<Mutex<AvailabilityMonitor>>,
-    profile: RoutingProfile,
+    /// 라우팅 프로필. 상단 카드 드래그로 chain이 바뀐다 (set_routing_chain).
+    profile: Mutex<RoutingProfile>,
 }
 
 /// 프론트로 흘려보내는 실행 이벤트. listen("agent-event")로 수신한다.
@@ -237,10 +238,44 @@ async fn recheck_availability(
     Ok(snapshots_of(&monitor))
 }
 
-/// 기본 라우팅 프로필로 지금 추천되는 CLI (PRD 6장: 새 작업마다 최우선 후보부터 재평가)
+/// 현재 라우팅 프로필로 지금 추천되는 CLI (PRD 6장: 새 작업마다 최우선 후보부터 재평가)
 #[tauri::command]
 fn pick_cli(state: tauri::State<'_, AppState>) -> Option<CliId> {
-    scheduler::pick_candidate(&state.profile, &snapshots_of(&state.monitor))
+    let profile = state.profile.lock().ok()?.clone();
+    scheduler::pick_candidate(&profile, &snapshots_of(&state.monitor))
+}
+
+/// 라우팅 우선순위 변경 (상단 CLI 카드 드래그, PRD 6장 라우팅 프로필).
+/// 상태바 순서·추천 CLI도 같은 체인을 따른다. 빠진 등록 CLI는 뒤에 붙이고 모르는 값은 무시한다.
+#[tauri::command]
+fn set_routing_chain(
+    app: AppHandle,
+    state: tauri::State<'_, AppState>,
+    chain: Vec<CliId>,
+) -> Result<Vec<AvailabilitySnapshot>, String> {
+    let registered: Vec<CliId> = adapters::registry().iter().map(|a| a.id()).collect();
+    let mut ordered: Vec<CliId> = Vec::new();
+    for c in chain {
+        if registered.contains(&c) && !ordered.contains(&c) {
+            ordered.push(c);
+        }
+    }
+    if ordered.is_empty() {
+        return Err("우선순위에 등록된 CLI가 하나도 없습니다".into());
+    }
+    for c in &registered {
+        if !ordered.contains(c) {
+            ordered.push(*c);
+        }
+    }
+    if let Ok(mut p) = state.profile.lock() {
+        p.chain = ordered.clone();
+    }
+    if let Ok(mut m) = state.monitor.lock() {
+        m.set_order(&ordered);
+    }
+    emit_availability(&app, &state.monitor);
+    Ok(snapshots_of(&state.monitor))
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -262,7 +297,7 @@ pub fn run() {
         .manage(AppState {
             runner: Arc::new(runner::Runner::new()),
             monitor: Arc::clone(&monitor),
-            profile,
+            profile: Mutex::new(profile),
         })
         .setup(move |app| {
             let handle = app.handle().clone();
@@ -290,7 +325,8 @@ pub fn run() {
             cancel_run,
             get_availability,
             recheck_availability,
-            pick_cli
+            pick_cli,
+            set_routing_chain
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
