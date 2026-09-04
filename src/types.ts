@@ -1,5 +1,5 @@
-// Rust 쪽 models.rs · availability.rs와 대응하는 프론트 타입.
-// 백엔드 배선 시 Tauri 이벤트/커맨드의 직렬화 형태와 일치시킨다.
+// Rust 쪽 models.rs · availability.rs · adapters/mod.rs와 1:1로 대응하는 프론트 타입.
+// Tauri 이벤트/커맨드의 serde 직렬화 형태(snake_case)를 그대로 따른다.
 
 export type CliId = "codex" | "claude" | "gemini" | "opencode";
 
@@ -15,17 +15,22 @@ export type AvailabilityState =
 export type Evidence = "official" | "cli_reported" | "estimated";
 
 export interface RateWindow {
-  name: string; // five_hour | seven_day 등
+  name: string; // five_hour | seven_day | seven_day_overage_included | estimated
   utilization: number | null; // 0~1, null = 신호 없음
-  resetsAt: number | null; // epoch seconds
+  resets_at: number | null; // epoch seconds
 }
 
-export interface CliStatus {
-  id: CliId;
-  label: string;
+/** Rust availability::AvailabilitySnapshot */
+export interface AvailabilitySnapshot {
+  cli: CliId;
   state: AvailabilityState;
   evidence: Evidence;
   windows: RateWindow[];
+  checked_at: number;
+  last_error: string | null;
+  next_check_at: number | null;
+  recovered_at: number | null;
+  version: string | null;
 }
 
 export type JobStatus =
@@ -51,12 +56,6 @@ export interface Job {
   unattendedOk: boolean;
 }
 
-export interface LogLine {
-  ts: string;
-  kind: "message" | "tool_use" | "file_change" | "rate_limit" | "system";
-  text: string;
-}
-
 /** Rust adapters::AgentEvent의 serde 직렬화 형태 (tag = "kind", snake_case) */
 export type AgentEvent =
   | { kind: "session_started"; session_id: string }
@@ -66,7 +65,7 @@ export type AgentEvent =
   | { kind: "rate_limit"; window: string; utilization: number; resets_at: number }
   | { kind: "completed"; ok: boolean; summary: string }
   | { kind: "stderr"; text: string }
-  | { kind: "process_exited"; code: number | null };
+  | { kind: "process_exited"; code: number | null; cancelled: boolean };
 
 /** Tauri "agent-event" 페이로드 (Rust RunEvent) */
 export interface RunEvent {

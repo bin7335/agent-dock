@@ -5,7 +5,8 @@ use crate::models::{CliId, CommandSpec, Job};
 
 /// Gemini CLI 어댑터.
 /// 실측 근거: `gemini -p -o stream-json --approval-mode ...` (스파이크 0, 2026-09-02).
-/// 사용량 신호가 없어 항상 추정(Estimated) 경로로 다룬다.
+/// 사용량 신호가 없어 항상 추정(Estimated) 경로로 다룬다. probe는 `--version`(기본 해석: 첫 줄 = 버전).
+/// 프롬프트는 아직 인자로 넘기므로 줄바꿈이 든 메시지는 실행 단계에서 거부된다 (TODO: stdin 전달 실측).
 pub struct GeminiAdapter;
 
 impl CliAdapter for GeminiAdapter {
@@ -19,6 +20,7 @@ impl CliAdapter for GeminiAdapter {
             args: vec!["--version".into()],
             env: vec![],
             cwd: String::new(),
+            stdin: None,
         }
     }
 
@@ -37,6 +39,7 @@ impl CliAdapter for GeminiAdapter {
             // 비신뢰 폴더 헤드리스 거부(exit 55) 우회 — 스파이크 0 실측
             env: vec![("GEMINI_CLI_TRUST_WORKSPACE".into(), "true".into())],
             cwd: job.project_dir.clone(),
+            stdin: None,
         }
     }
 
@@ -91,5 +94,26 @@ impl CliAdapter for GeminiAdapter {
         spec.args.push("--resume".into());
         spec.args.push("latest".into());
         Some(spec)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::availability::{Evidence, ProbeOutcome};
+
+    #[test]
+    fn version_probe_uses_default_interpretation() {
+        assert_eq!(
+            GeminiAdapter.interpret_probe(Some(0), "0.54.4\n", ""),
+            ProbeOutcome::Ready {
+                evidence: Evidence::Estimated,
+                version: Some("0.54.4".into())
+            }
+        );
+        assert!(matches!(
+            GeminiAdapter.interpret_probe(Some(1), "", "boom"),
+            ProbeOutcome::Unavailable { .. }
+        ));
     }
 }

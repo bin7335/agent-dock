@@ -2,6 +2,7 @@ pub mod claude;
 pub mod codex;
 pub mod gemini;
 
+use crate::availability::{Evidence, ProbeOutcome};
 use crate::models::{CliId, CommandSpec, Job};
 
 /// CLI별 스트림에서 파싱된 공통 이벤트.
@@ -19,11 +20,12 @@ pub enum AgentEvent {
     /// stderr 라인 (Codex가 진단 로그를 stderr에 섞는 실측 반영 — stdout과 분리 수집)
     Stderr { text: String },
     /// 프로세스 종료. Completed와 별개로 runner가 항상 마지막에 보낸다.
-    ProcessExited { code: Option<i32> },
+    /// cancelled=true면 사용자 중지로 끝난 것이라 비정상 종료로 다루지 않는다.
+    ProcessExited { code: Option<i32>, cancelled: bool },
 }
 
 /// PRD 9장 어댑터 계약.
-/// 1단계 범위: 명령 조립 + 이벤트 파싱. 프로세스 생성·중지는 runner가 맡는다.
+/// 1단계 범위: 명령 조립 + 이벤트 파싱 + probe 해석. 프로세스 생성·중지는 runner가 맡는다.
 pub trait CliAdapter: Send + Sync {
     fn id(&self) -> CliId;
 
@@ -40,8 +42,40 @@ pub trait CliAdapter: Send + Sync {
     fn build_resume_command(&self, _job: &Job, _session_id: &str) -> Option<CommandSpec> {
         None
     }
+
+    /// probe 명령의 종료 코드·출력을 가용성 판단으로 해석한다.
+    /// 기본: 정상 종료면 설치 확인(추정 근거), 첫 줄을 버전으로 본다.
+    fn interpret_probe(&self, code: Option<i32>, stdout: &str, stderr: &str) -> ProbeOutcome {
+        match code {
+            Some(0) => ProbeOutcome::Ready {
+                evidence: Evidence::Estimated,
+                version: first_line(stdout),
+            },
+            _ => ProbeOutcome::Unavailable {
+                detail: probe_detail(code, stdout, stderr),
+            },
+        }
+    }
 }
 
+pub fn first_line(s: &str) -> Option<String> {
+    s.lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .map(String::from)
+}
+
+pub fn probe_detail(code: Option<i32>, stdout: &str, stderr: &str) -> String {
+    let msg = first_line(stderr)
+        .or_else(|| first_line(stdout))
+        .unwrap_or_default();
+    match code {
+        Some(c) => format!("exit {c}: {msg}"),
+        None => format!("실행 불가 또는 시간 초과: {msg}"),
+    }
+}
+
+/// 라우팅 후보 순서(Codex → Claude → Gemini)와 같게 둔다.
 pub fn registry() -> Vec<std::sync::Arc<dyn CliAdapter>> {
     vec![
         std::sync::Arc::new(codex::CodexAdapter),

@@ -1,42 +1,52 @@
 use serde_json::Value;
 
-use super::{AgentEvent, CliAdapter};
+use super::{probe_detail, AgentEvent, CliAdapter};
+use crate::availability::{Evidence, ProbeOutcome};
 use crate::models::{CliId, CommandSpec, Job};
 
 /// Claude Code 어댑터.
-/// 실측 근거: `claude -p --output-format stream-json --verbose` (스파이크 0, 2026-09-02)
+/// 실측 근거: `claude -p --output-format stream-json --verbose` (스파이크 0, 2026-09-02),
+/// stdin 프롬프트 전달과 `claude auth status` JSON (2026-09-04 실측).
 pub struct ClaudeAdapter;
+
+impl ClaudeAdapter {
+    /// 프롬프트는 인자가 아니라 stdin으로 넘긴다 — 여러 줄·특수문자 프롬프트를 cmd 이스케이프에 태우지 않기 위해.
+    fn base_args(job: &Job) -> Vec<String> {
+        vec![
+            "-p".to_string(),
+            "--output-format".into(),
+            "stream-json".into(),
+            "--verbose".into(),
+            "--permission-mode".into(),
+            // 파일 쓰기 허용 여부 → --permission-mode 매핑 (스파이크 2차 결과)
+            if job.allow_writes { "acceptEdits" } else { "plan" }.into(),
+        ]
+    }
+}
 
 impl CliAdapter for ClaudeAdapter {
     fn id(&self) -> CliId {
         CliId::Claude
     }
 
+    /// `claude auth status`는 `{"loggedIn": true, "subscriptionType": "max", ...}` JSON을 돌려준다 (2.1.259 실측)
     fn probe_command(&self) -> CommandSpec {
         CommandSpec {
             program: "claude".into(),
-            args: vec!["--version".into()],
+            args: vec!["auth".into(), "status".into()],
             env: vec![],
             cwd: String::new(),
+            stdin: None,
         }
     }
 
     fn build_command(&self, job: &Job) -> CommandSpec {
-        let mut args = vec![
-            "-p".to_string(),
-            job.request.clone(),
-            "--output-format".into(),
-            "stream-json".into(),
-            "--verbose".into(),
-            "--permission-mode".into(),
-        ];
-        // 파일 쓰기 허용 여부 → --permission-mode 매핑 (스파이크 2차 결과)
-        args.push(if job.allow_writes { "acceptEdits".into() } else { "plan".into() });
         CommandSpec {
             program: "claude".into(),
-            args,
+            args: Self::base_args(job),
             env: vec![],
             cwd: job.project_dir.clone(),
+            stdin: Some(job.request.clone()),
         }
     }
 
@@ -59,7 +69,7 @@ impl CliAdapter for ClaudeAdapter {
                     vec![]
                 }
             }
-            // 핵심 한도 신호: 윈도우별 utilization·resetsAt (five_hour / seven_day)
+            // 핵심 한도 신호: 윈도우별 utilization·resetsAt (five_hour / seven_day / seven_day_overage_included)
             "rate_limit_event" => {
                 let mut out = vec![];
                 if let Some(windows) = v
@@ -124,5 +134,109 @@ impl CliAdapter for ClaudeAdapter {
         spec.args.push("--resume".into());
         spec.args.push(session_id.to_string());
         Some(spec)
+    }
+
+    fn interpret_probe(&self, code: Option<i32>, stdout: &str, stderr: &str) -> ProbeOutcome {
+        if let Ok(v) = serde_json::from_str::<Value>(stdout.trim()) {
+            return match v.get("loggedIn").and_then(Value::as_bool) {
+                Some(true) => ProbeOutcome::Ready {
+                    evidence: Evidence::CliReported,
+                    version: None,
+                },
+                Some(false) => ProbeOutcome::AuthRequired {
+                    detail: "claude auth status: loggedIn=false".into(),
+                },
+                None => ProbeOutcome::Ready {
+                    evidence: Evidence::Estimated,
+                    version: None,
+                },
+            };
+        }
+        let text = format!("{stdout}\n{stderr}").to_ascii_lowercase();
+        if text.contains("not logged in") || text.contains("login") {
+            ProbeOutcome::AuthRequired {
+                detail: probe_detail(code, stdout, stderr),
+            }
+        } else {
+            ProbeOutcome::Unavailable {
+                detail: probe_detail(code, stdout, stderr),
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::JobStatus;
+
+    fn job(allow_writes: bool) -> Job {
+        Job {
+            id: 0,
+            title: "t".into(),
+            request: "line one\nline two".into(),
+            project_dir: "D:\\x".into(),
+            profile: "코딩 작업".into(),
+            allow_writes,
+            unattended_ok: false,
+            status: JobStatus::Starting,
+        }
+    }
+
+    #[test]
+    fn prompt_goes_through_stdin_not_args() {
+        let spec = ClaudeAdapter.build_command(&job(false));
+        assert_eq!(spec.stdin.as_deref(), Some("line one\nline two"));
+        assert!(!spec.args.iter().any(|a| a.contains("line one")));
+        assert!(spec
+            .args
+            .windows(2)
+            .any(|w| w == ["--permission-mode", "plan"]));
+        let spec = ClaudeAdapter.build_command(&job(true));
+        assert!(spec
+            .args
+            .windows(2)
+            .any(|w| w == ["--permission-mode", "acceptEdits"]));
+    }
+
+    #[test]
+    fn resume_appends_session() {
+        let spec = ClaudeAdapter
+            .build_resume_command(&job(false), "abc")
+            .unwrap();
+        assert_eq!(&spec.args[spec.args.len() - 2..], ["--resume", "abc"]);
+        assert!(spec.stdin.is_some());
+    }
+
+    #[test]
+    fn probe_json_is_interpreted() {
+        let ok = ClaudeAdapter.interpret_probe(
+            Some(0),
+            "{\"loggedIn\": true, \"subscriptionType\": \"max\"}",
+            "",
+        );
+        assert_eq!(
+            ok,
+            ProbeOutcome::Ready {
+                evidence: Evidence::CliReported,
+                version: None
+            }
+        );
+        let no = ClaudeAdapter.interpret_probe(Some(0), "{\"loggedIn\": false}", "");
+        assert!(matches!(no, ProbeOutcome::AuthRequired { .. }));
+        let missing = ClaudeAdapter.interpret_probe(None, "", "'claude' is not recognized");
+        assert!(matches!(missing, ProbeOutcome::Unavailable { .. }));
+    }
+
+    #[test]
+    fn rate_limit_event_yields_all_windows() {
+        let line = r#"{"type":"rate_limit_event","rate_limit_info":{"unifiedWindows":{"five_hour":{"utilization":0.08,"resetsAt":1788511200},"seven_day":{"utilization":0.01,"resetsAt":1789099200}}}}"#;
+        let evs = ClaudeAdapter.parse_event(line);
+        assert_eq!(evs.len(), 2);
+        assert!(evs.iter().any(|e| matches!(
+            e,
+            AgentEvent::RateLimit { window, utilization, resets_at }
+                if window == "five_hour" && (*utilization - 0.08).abs() < 1e-9 && *resets_at == 1788511200
+        )));
     }
 }

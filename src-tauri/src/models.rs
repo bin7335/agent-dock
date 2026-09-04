@@ -10,7 +10,8 @@ pub enum CliId {
     Opencode,
 }
 
-/// 작업 상태 머신 (PRD 6장)
+/// 작업 상태 머신 (PRD 6장). 큐·영속화 배선 전이라 일부 변형은 아직 생성되지 않는다.
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum JobStatus {
@@ -26,6 +27,7 @@ pub enum JobStatus {
     Blocked,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Job {
     pub id: i64,
@@ -47,9 +49,13 @@ pub struct CommandSpec {
     pub args: Vec<String>,
     pub env: Vec<(String, String)>,
     pub cwd: String,
+    /// 표준 입력으로 써 넣을 내용. 여러 줄 프롬프트처럼 인자로 넘기기 어려운 텍스트용.
+    #[serde(default)]
+    pub stdin: Option<String>,
 }
 
-/// 다음 CLI로 넘기는 최소 정보 (PRD 6장 Handoff 패킷)
+/// 다음 CLI로 넘기는 최소 정보 (PRD 6장 Handoff 패킷). 2단계 자동 폴백에서 배선한다.
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HandoffPacket {
     pub original_request: String,
@@ -57,5 +63,7 @@ pub struct HandoffPacket {
     pub stop_reason: String,
     pub done_summary: String,
     pub changed_files: Vec<String>,
+    /// 현재 편집·참고 중인 파일 경로 (새 에이전트의 중복 탐색 방지, PRD 6장 2026-09-04 검토)
+    pub referenced_files: Vec<String>,
     pub next_steps: Vec<String>,
 }

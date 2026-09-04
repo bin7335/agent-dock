@@ -3,27 +3,21 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import "./App.css";
-import type { CliId, CliStatus, Evidence, RunEvent } from "./types";
+import type { AvailabilitySnapshot, CliId, Evidence, RunEvent } from "./types";
 
-const CLI_OPTIONS: { id: CliId; label: string }[] = [
-  { id: "codex", label: "Codex" },
-  { id: "claude", label: "Claude" },
-  { id: "gemini", label: "Gemini" },
-];
+const CLI_LABEL: Record<CliId, string> = {
+  codex: "Codex",
+  claude: "Claude",
+  gemini: "Gemini",
+  opencode: "OpenCode",
+};
 
-// availability monitor 배선 전까지는 unknown에서 시작하고,
-// 실행 중 도착하는 rate_limit 이벤트(Claude 공식 신호)로만 갱신된다.
-const initialStatuses: CliStatus[] = CLI_OPTIONS.map(({ id, label }) => ({
-  id,
-  label,
-  state: "unknown",
-  evidence: "estimated",
-  windows: [],
-}));
+// 백엔드 get_availability가 오기 전까지의 표시 순서 (라우팅 기본 체인과 동일)
+const FALLBACK_ORDER: CliId[] = ["codex", "claude", "gemini"];
 
-const STATE_LABEL: Record<CliStatus["state"], string> = {
+const STATE_LABEL: Record<AvailabilitySnapshot["state"], string> = {
   available: "Ready",
-  degraded: "Degraded",
+  degraded: "임박",
   cooldown: "Cooldown",
   auth_required: "로그인 필요",
   unavailable: "사용 불가",
@@ -34,6 +28,13 @@ const EVIDENCE_BADGE: Record<Evidence, string> = {
   official: "공식",
   cli_reported: "CLI 제시",
   estimated: "추정",
+};
+
+const WINDOW_LABEL: Record<string, string> = {
+  five_hour: "5시간",
+  seven_day: "7일",
+  seven_day_overage_included: "7일(추가 사용 포함)",
+  estimated: "추정 쿨다운",
 };
 
 const STORAGE_DIR = "agentdock.projectDir";
@@ -114,6 +115,9 @@ function applyEvent(conv: Conversation, ev: RunEvent): Conversation {
       return conv;
     }
     case "process_exited": {
+      if (event.cancelled) {
+        return { ...conv, state: "idle", activeRunId: null, items: [...items, item("system", "중지됨", run_id)] };
+      }
       const abnormal = event.code !== null && event.code !== 0;
       const failed = conv.state === "failed" || abnormal;
       return {
@@ -135,15 +139,29 @@ function pct(u: number | null): string {
   return u === null ? "?" : `${Math.round(u * 100)}%`;
 }
 
-function resetClock(epoch: number | null): string {
-  if (epoch === null) return "재검사 대기";
+function clock(epoch: number | null): string {
+  if (epoch === null) return "–";
   const d = new Date(epoch * 1000);
-  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")} ↻`;
+  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
 }
 
-function maxUtil(cli: CliStatus): number | null {
-  const vals = cli.windows.map((w) => w.utilization).filter((v): v is number => v !== null);
+function dateTime(epoch: number | null): string {
+  if (epoch === null) return "–";
+  const d = new Date(epoch * 1000);
+  return `${d.getMonth() + 1}/${d.getDate()} ${clock(epoch)}`;
+}
+
+function maxUtil(s: AvailabilitySnapshot): number | null {
+  const vals = s.windows.map((w) => w.utilization).filter((v): v is number => v !== null);
   return vals.length ? Math.max(...vals) : null;
+}
+
+/** 상태바의 시각 칸: 공식·CLI 제시는 리셋 시각, 쿨다운은 복귀 예정, 추정은 다음 재검사 (PRD 7장) */
+function timeLabel(s: AvailabilitySnapshot): string {
+  if (s.state === "cooldown") return `${clock(s.next_check_at)} 복귀 예정`;
+  const resets = s.windows.map((w) => w.resets_at).filter((v): v is number => v !== null);
+  if (s.evidence === "official" && resets.length) return `${clock(Math.min(...resets))} ↻`;
+  return s.next_check_at === null ? "재검사 대기" : `${clock(s.next_check_at)} 재검사`;
 }
 
 function loadStored(key: string, fallback: string): string {
@@ -163,7 +181,10 @@ function store(key: string, value: string) {
 }
 
 function App() {
-  const [statuses, setStatuses] = useState<CliStatus[]>(initialStatuses);
+  const [statuses, setStatuses] = useState<AvailabilitySnapshot[]>([]);
+  const [recommended, setRecommended] = useState<CliId | null>(null);
+  const [detailCli, setDetailCli] = useState<CliId | null>(null);
+  const [rechecking, setRechecking] = useState(false);
   const [convs, setConvs] = useState<Conversation[]>([]);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [projectDir, setProjectDir] = useState<string>(() => loadStored(STORAGE_DIR, ""));
@@ -176,32 +197,16 @@ function App() {
   const pendingRef = useRef<Record<number, RunEvent[]>>({});
   const endRef = useRef<HTMLDivElement | null>(null);
 
+  const cliOrder: CliId[] = statuses.length ? statuses.map((s) => s.cli) : FALLBACK_ORDER;
+
   function dispatch(convId: number, ev: RunEvent) {
     setConvs((prev) => prev.map((c) => (c.id === convId ? applyEvent(c, ev) : c)));
   }
 
+  // 실행 이벤트 수신. 한도 신호는 백엔드 모니터가 소화하고 availability-changed로 다시 온다.
   useEffect(() => {
     const un = listen<RunEvent>("agent-event", ({ payload }) => {
-      const { run_id, cli: evCli, event } = payload;
-
-      if (event.kind === "rate_limit") {
-        setStatuses((prev) =>
-          prev.map((s) => {
-            if (s.id !== evCli) return s;
-            const others = s.windows.filter((w) => w.name !== event.window);
-            return {
-              ...s,
-              state: "available",
-              evidence: "official",
-              windows: [
-                ...others,
-                { name: event.window, utilization: event.utilization, resetsAt: event.resets_at },
-              ],
-            };
-          }),
-        );
-      }
-
+      const { run_id } = payload;
       // invoke가 run_id를 돌려주기 전에 도착한 이벤트는 보류했다가 매핑 후 재생한다.
       const convId = runMapRef.current[run_id];
       if (convId === undefined) {
@@ -217,12 +222,30 @@ function App() {
     };
   }, []);
 
+  // 가용성: 시작 시 한 번 읽고, 이후는 모니터가 밀어주는 이벤트로 갱신
+  useEffect(() => {
+    invoke<AvailabilitySnapshot[]>("get_availability")
+      .then(setStatuses)
+      .catch((e) => setError(String(e)));
+    const un = listen<AvailabilitySnapshot[]>("availability-changed", ({ payload }) => setStatuses(payload));
+    return () => {
+      un.then((f) => f());
+    };
+  }, []);
+
+  useEffect(() => {
+    invoke<CliId | null>("pick_cli")
+      .then(setRecommended)
+      .catch(() => setRecommended(null));
+  }, [statuses]);
+
   useEffect(() => {
     store(STORAGE_CLI, cli);
   }, [cli]);
 
   const current = convs.find((c) => c.id === selectedId) ?? null;
   const running = current?.state === "running";
+  const detail = detailCli ? (statuses.find((s) => s.cli === detailCli) ?? null) : null;
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ block: "end" });
@@ -237,6 +260,18 @@ function App() {
       }
     } catch (e) {
       setError(String(e));
+    }
+  }
+
+  async function recheck(target: CliId | null) {
+    setRechecking(true);
+    try {
+      const snaps = await invoke<AvailabilitySnapshot[]>("recheck_availability", { cli: target });
+      setStatuses(snaps);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setRechecking(false);
     }
   }
 
@@ -304,14 +339,25 @@ function App() {
   return (
     <div className="app">
       <header className="cli-row">
-        {statuses.map((s) => (
-          <div key={s.id} className={`cli-card state-${s.state}`}>
-            <span className="dot" />
-            <span className="cli-name">{s.label}</span>
-            <span className="cli-state">{STATE_LABEL[s.state]}</span>
-            <span className={`evidence evidence-${s.evidence}`}>{EVIDENCE_BADGE[s.evidence]}</span>
-          </div>
-        ))}
+        {cliOrder.map((id) => {
+          const s = statuses.find((x) => x.cli === id);
+          const state = s?.state ?? "unknown";
+          const evidence = s?.evidence ?? "estimated";
+          const u = s ? maxUtil(s) : null;
+          return (
+            <div
+              key={id}
+              className={`cli-card state-${state}${id === cli ? " current" : ""}`}
+              title={s?.version ? `버전 ${s.version}` : undefined}
+            >
+              <span className="dot" />
+              <span className="cli-name">{CLI_LABEL[id]}</span>
+              <span className="cli-state">{STATE_LABEL[state]}</span>
+              {u !== null && <span className="cli-util">{pct(u)}</span>}
+              <span className={`evidence evidence-${evidence}`}>{EVIDENCE_BADGE[evidence]}</span>
+            </div>
+          );
+        })}
       </header>
 
       <main className="main">
@@ -393,9 +439,9 @@ function App() {
             📁 {projectDir || "프로젝트 폴더 선택"}
           </button>
           <select value={cli} onChange={(e) => setCli(e.currentTarget.value as CliId)} title="새 대화에 쓸 CLI">
-            {CLI_OPTIONS.map((o) => (
-              <option key={o.id} value={o.id}>
-                {o.label}
+            {cliOrder.map((id) => (
+              <option key={id} value={id}>
+                {CLI_LABEL[id]}
               </option>
             ))}
           </select>
@@ -403,6 +449,9 @@ function App() {
             <input type="checkbox" checked={allowWrites} onChange={(e) => setAllowWrites(e.currentTarget.checked)} />
             파일 쓰기 허용
           </label>
+          <span className="routing" title="라우팅 프로필 '코딩 작업' 기준, 지금 가용한 최우선 CLI">
+            추천: {recommended ? CLI_LABEL[recommended] : "없음"}
+          </span>
         </div>
         <div className="actions">
           <button onClick={() => void stop()} disabled={!running}>
@@ -415,19 +464,69 @@ function App() {
       </div>
 
       <footer className="statusbar">
-        {statuses.map((s) => {
-          const u = maxUtil(s);
-          const primary = s.windows[0];
+        {detail && (
+          <div className="sb-detail">
+            <div className="sb-detail-head">
+              <strong>{CLI_LABEL[detail.cli]}</strong>
+              <span className={`sb-state state-${detail.state}`}>
+                <span className="dot" /> {STATE_LABEL[detail.state]}
+              </span>
+              <span className={`evidence evidence-${detail.evidence}`}>{EVIDENCE_BADGE[detail.evidence]}</span>
+              <span className="sb-spacer" />
+              <button className="small" onClick={() => void recheck(detail.cli)} disabled={rechecking}>
+                {rechecking ? "재검사 중…" : "재검사"}
+              </button>
+              <button className="small" onClick={() => setDetailCli(null)}>
+                닫기
+              </button>
+            </div>
+            {detail.windows.length ? (
+              <table>
+                <tbody>
+                  {detail.windows.map((w) => (
+                    <tr key={w.name}>
+                      <td>{WINDOW_LABEL[w.name] ?? w.name}</td>
+                      <td className="num">{pct(w.utilization)}</td>
+                      <td>{w.resets_at === null ? "리셋 시각 미상" : `${dateTime(w.resets_at)} 리셋`}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            ) : (
+              <p className="muted">한도 윈도우 신호 없음 — 사용률은 표시하지 않습니다.</p>
+            )}
+            <p className="muted">
+              라우팅 순위 {cliOrder.indexOf(detail.cli) + 1}/{cliOrder.length} · 버전 {detail.version ?? "?"} · 갱신{" "}
+              {dateTime(detail.checked_at)} · 다음 재검사 {dateTime(detail.next_check_at)}
+              {detail.recovered_at !== null && ` · 복귀 ${dateTime(detail.recovered_at)}`}
+            </p>
+            {detail.last_error && <p className="error">마지막 오류: {detail.last_error}</p>}
+          </div>
+        )}
+        {cliOrder.map((id) => {
+          const s = statuses.find((x) => x.cli === id);
+          if (!s) {
+            return (
+              <div key={id} className="statusbar-item state-unknown">
+                <span className="dot" />
+                <span>{CLI_LABEL[id]}</span>
+                <span className="sb-util">?</span>
+                <span className="sb-reset">확인 중</span>
+              </div>
+            );
+          }
           return (
             <div
-              key={s.id}
-              className={`statusbar-item state-${s.state}`}
-              title={s.windows.map((w) => `${w.name}: ${pct(w.utilization)}`).join(" · ") || "신호 없음"}
+              key={id}
+              className={`statusbar-item state-${s.state}${id === cli ? " current" : ""}${detailCli === id ? " open" : ""}`}
+              title="클릭하면 한도 근거·재검사"
+              onClick={() => setDetailCli((v) => (v === id ? null : id))}
             >
               <span className="dot" />
-              <span>{s.label}</span>
-              <span className="sb-util">{pct(u)}</span>
-              <span className="sb-reset">{resetClock(primary?.resetsAt ?? null)}</span>
+              <span>{CLI_LABEL[id]}</span>
+              <span className="sb-state-text">{STATE_LABEL[s.state]}</span>
+              <span className="sb-util">{pct(maxUtil(s))}</span>
+              <span className="sb-reset">{timeLabel(s)}</span>
               <span className={`evidence evidence-${s.evidence}`}>{EVIDENCE_BADGE[s.evidence]}</span>
             </div>
           );
