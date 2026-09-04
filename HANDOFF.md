@@ -1,66 +1,63 @@
-# Agent Dock — 핸드오프 노트 (2026-09-04)
+# Agent Dock — 핸드오프 노트 (2026-09-04 23:20 기준)
 
-PRD·설계 근거·스파이크 실측·구현 현황의 원본은 위키 `wiki/【프로그래밍】 AI CLI 오케스트레이터 PRD.md`다. 이 문서는 코드 저장소에서 바로 이어받기 위한 요약이다.
+PRD·설계 근거·스파이크 실측·구현 현황의 원본은 위키 `wiki/【프로그래밍】 AI CLI 오케스트레이터 PRD.md`(14장 구현 현황, 15장 실측)다. 이 문서는 코드 저장소에서 바로 이어받기 위한 요약이다.
 
-## 먼저 할 일
+## 다음 세션 시작 절차
 
-1. 개발 환경 (2026-09-03 D:로 이전 완료)
-   - Rust: `RUSTUP_HOME=D:\tools\rustup`, `CARGO_HOME=D:\tools\cargo`, PATH에 `D:\tools\cargo\bin`. 새 PowerShell 창이면 그대로 `cargo`가 잡힌다.
-   - 사용자 `TEMP`/`TMP` = `D:\temp`. VS Build Tools 2022는 `D:\tools\VS2022BuildTools`. `src-tauri\target`(7.4 GB)은 D:. C: 여유 5.1 GB.
-2. 실행: 새 PowerShell 창에서
-   ```powershell
-   cd D:\dev\agent-dock
-   npm run tauri dev
-   ```
-   (옛 셸에 `C:\Users\User\.cargo\bin` PATH가 남아 있으면 `$env:PATH = "D:\tools\cargo\bin;$env:PATH"`)
-3. 검증: `npx tsc --noEmit` (프론트), `cd src-tauri; cargo test` (22개, 경고 0). 실제 claude를 태우는 통합 테스트는 `cargo test real_claude -- --ignored --nocapture`.
-4. git: `main`, 커밋 9개 (기준선 `da632ec` → 가용성 모니터 `2e992b0` → HANDOFF → Codex 사용량 `dfc1d11` → 드래그 우선순위). `core.autocrlf=false`. 원격 없음 — 올린다면 private.
+1. 이 문서 → `git log --oneline | head` → PRD 14장 "다음 작업" 순으로 읽는다. 위키 메모리(`project-agent-dock`)에도 같은 요약이 있다.
+2. 개발 환경 (2026-09-03 D:로 이전 완료): Rust `RUSTUP_HOME=D:\tools\rustup`, `CARGO_HOME=D:\tools\cargo`, PATH에 `D:\tools\cargo\bin`. 사용자 `TEMP`/`TMP`=`D:\temp`. VS Build Tools 2022는 `D:\tools\VS2022BuildTools`. `src-tauri\target`은 D:.
+3. 실행: 새 PowerShell 창에서 `cd D:\dev\agent-dock; npm run tauri dev` (src-tauri 변경 시 자동 재빌드·재시작). 옛 셸에 `C:\Users\User\.cargo\bin`이 남아 있으면 `$env:PATH = "D:\tools\cargo\bin;$env:PATH"`.
+4. 검증: `npx tsc --noEmit`(프론트), `cd src-tauri; cargo test`(48개, 무시 1). 실제 claude를 태우는 통합 테스트는 `cargo test real_claude -- --ignored --nocapture`.
+5. git: `main`, 커밋 25개(최근: `aa6db11`). `core.autocrlf=false`. 원격 없음 — 올린다면 private.
+6. **바로 할 일 = 2단계 자동 폴백**(아래 "다음 단계" 1번). 앱 E2E는 화면 자동 조작 스크립트(세션 scratchpad `ad.ps1`: Snap/Click/LoginConsoles)로 했다 — 새 세션이면 다시 만든다(요령은 맨 아래).
 
-## 현재 상태 (2026-09-04, E2E 통과)
+## 현재 상태
 
-- 백엔드(`src-tauri/src`): `models` · `availability`(CLI별 스냅샷 상태 머신 + 오류 분류) · `scheduler`(`pick_candidate` 배선) · `db`(스키마만, 미배선) · `adapters/{claude,codex,gemini}`(명령 조립·이벤트 파싱·probe 해석) · `runner`(tokio 실행, stdin 전달, 중지 플래그, `run_capture` 타임아웃, PATH에서 .exe/.cmd 해석)
-- Tauri 커맨드: `start_job`/`continue_job`(model 인자 포함) · `cancel_run` · `get_availability` · `recheck_availability` · `pick_cli` · `set_routing_chain` · `set_enabled_clis` · `list_models` · `login_cli`. 이벤트: `agent-event`(`{run_id, cli, event}`), `availability-changed`(스냅샷 배열, `enabled` 플래그 포함)
-- 어댑터 5종: codex · claude · **antigravity**(`agy` 1.1.26, Google AI Pro 구독 경로 — 2026-06-18부터 Gemini CLI가 개인 계정을 끊고 Antigravity CLI로 이전시킴. `agy -p <프롬프트> --output-format stream-json --mode plan|accept-edits [--dangerously-skip-permissions] [--model X] [--conversation <id>]`, 이벤트 init/step_update(text_delta·tool_info)/result(status·response·usage), probe·모델 목록 `agy models`(탭 구분, 14종: gemini-3.8/3.7/3.6-flash high·medium·low, gemini-3.1-pro high·low, claude-sonnet-4-6, claude-opus-4-6-thinking, gpt-oss-120b), 로그인은 대화형 `agy` 첫 실행의 브라우저 흐름(자격증명은 Windows 자격 증명 관리자), 설치 `winget install Google.AntigravityCLI`(포터블 링크 `%LOCALAPPDATA%\Microsoft\WinGet\Linksgy.exe` — runner가 예비 경로로 탐색). 스킬은 워크스페이스 `.agents/skills`(위키 구조와 동일)·전역 `~/.gemini/antigravity-cli/skills`) · gemini(API 키, 무료 티어라 flash만) · **opencode**(1.18.5 실측: `run --format json --dir … --agent plan|build [--auto] [-m provider/model]`, 이벤트 `text`/`step_finish`, `--session` 재개, probe `auth list`의 "N credentials"). 어댑터 계약에 `login_flow`(Console=콘솔 창에서 CLI 로그인 명령, Exchange=ACP authenticate) · `model_listing`(Static/Exchange/Command) · `parse_models` 추가
-- CLI 레지스트리 패널(⚙ CLI 설정): 사용 여부(끄면 상태바·라우팅·probe 제외, localStorage `agentdock.enabled`), 로그인 버튼, 모델 선택(localStorage `agentdock.model.<cli>`, 툴바에도 현재 CLI용 선택). 모델 목록: Claude는 목록 명령이 없어 설치된 네이티브 바이너리(`%APPDATA%
-pm
-ode_modules\@anthropic-ai\claude-codein\claude.exe`, 220MB)를 스캔해 이 CLI가 아는 정식 id(`claude-<계열>-<메이저>[-<마이너>]`, 날짜·v1 변형 제외)를 별칭 4개 뒤에 나열(`ModelListing::Scan`, 계정 가용 여부는 실행 시 확인), Codex app-server `model/list`(limit 필요), Gemini ACP `session/new`의 availableModels, OpenCode `opencode models`
-- 로그인 흐름: Claude `claude auth login`·Codex `codex login`·OpenCode `opencode auth login`은 앱 데이터 폴더에 `login-<cli>.cmd`를 만들어 `cmd /c start "" /wait`로 새 콘솔 창에서 실행하고 창이 닫히면 재검사(상한 10분). Gemini는 ACP `authenticate{methodId:oauth-personal}`. **로그인 흐름 실사용 E2E는 아직 미수행**(계정이 이미 로그인 상태라 미검증)
-- 가용성 모니터(`lib.rs` setup): 시작 시 전체 probe → 30초 틱. probe = claude `auth status`(JSON `loggedIn`) / codex `login status` / gemini `--version`. 실행 스트림의 `rate_limit_event`(공식)와 실패 원문(한도·인증·네트워크 분류, 리셋 epoch 힌트 추출)을 반영. 주기 probe 10분, 추정 쿨다운 30분, 리셋 직후 10분 내 재발 시 6시간 장기 쿨다운, 모든 윈도우 리셋 시에만 복귀
-- 프로세스 실행: Windows에서 PATH를 뒤져 실제 파일 경로(.exe → .cmd → .bat)로 실행. .cmd는 Rust std가 cmd.exe 경유 + 안전 이스케이프를 맡는다(CVE-2024-24576 대응). 줄바꿈 인자는 그 단계에서 거부되므로 Claude 프롬프트는 stdin으로 넘긴다(실측: `echo … | claude -p` 정상)
-- Codex 공식 사용량: `codex app-server`(stdio JSON-RPC)에 `initialize` → `initialized` → `account/rateLimits/read` 3줄을 일괄 전송(`runner::exchange_lines`, 1.2초). 응답 `rateLimits.primary/secondary{usedPercent, windowDurationMins, resetsAt}`를 five_hour/seven_day 이름으로 정규화해 `apply_rate_limit` → 상태바 "46% · 리셋 ↻ · 공식". `rateLimitReachedType`이 있으면 100%로. probe가 Ready인 CLI만 읽는다
-- 우선순위 드래그: 상단 카드(순위 번호)를 HTML5 드래그로 옮기면 `set_routing_chain`이 라우팅 프로필·모니터 순서·추천 CLI를 갱신하고 localStorage(`agentdock.chain`)에 저장, 시작 시 복원. Windows 웹뷰에서 HTML 드래그가 되려면 `tauri.conf.json` 창의 `dragDropEnabled:false` 필요(적용됨). 기본 창 1100×760
-- 스냅샷 보존: 가용성이 바뀔 때마다 `%APPDATA%\com.user.agent-dockvailability.json`에 저장하고 시작 시 `import`로 복원(리셋 지난 윈도우 폐기, 진행 중 쿨다운 유지). Claude 사용률은 실행 스트림에서만 오므로 이 파일이 없으면 재시작 후 다음 Claude 실행까지 "?"다. Gemini는 CLI가 사용량을 제공하지 않아 항상 "?"(추정)이며 429 관측 시에만 추정 쿨다운
-- 상단 카드는 순위·사용 가능 여부만 표시(사용률·근거는 상태바·상세 패널) — 2026-09-04 사용자 요청
-- 계정 표시: 스냅샷 `account{label, plan, method}` — Claude `auth status`(email·subscriptionType·authMethod), Codex app-server `account/read`(한도 교환에 id 3으로 동승, email·planType), OpenCode `auth list`의 제공자 이름, Gemini는 `~/.gemini/settings.json`의 `security.auth.selectedType`(gemini-api-key → "Gemini API 키", oauth-personal → google_accounts.json의 active/old). 상태바 상세 패널과 레지스트리 표에 표시. 토큰은 읽지 않는다
-- Gemini probe는 ACP 교환(`probe_exchange`: initialize → session/new). 성공 = 인증 OK(CLI 제시, agentInfo.version), `Authentication required` 오류 = 로그인 필요(빨강). 주기 probe 5분 + 창 포커스 복귀 시 즉시 재검사(30초 스로틀)
-- 대화 중 CLI 전환(2026-09-04): 대화는 CLI별 세션(`sessions[cli] = {sessionId, syncedUpTo}`)을 유지하고, 툴바 CLI 선택을 바꾸면 현재 대화의 `cli`가 바뀐다. 다음 메시지에 그 CLI가 모르는 항목(다른 CLI에서 오간 사용자·응답·파일 변경)을 `buildHandoff` 문단으로 앞에 붙여 보낸다(새 CLI면 start_job, 기존 세션이면 continue_job + "그사이 대화"). 실행 종료 시 `syncedUpTo`를 갱신. 16,000자 초과분은 앞부분 생략
-- 여러 줄 프롬프트 전달(전환·handoff 전제): Claude stdin, Gemini stdin + `-p ""`, OpenCode는 줄바꿈 있을 때 임시 파일 `-f` 첨부(메시지 뒤에), Codex는 네이티브 exe 인자(PATH 해석을 .exe 우선으로 변경 — cmd 셔임 경유 시 첫 줄만 전달되는 실측)
-- 프론트(`src/App.tsx`): 채팅 UI(세션 재개·폴더 고정) + 상단 카드·하단 상태바 실데이터 + 상태바 클릭 상세 패널(윈도우별 사용률·리셋·근거·버전·갱신·다음 재검사·마지막 오류·재검사 버튼) + 툴바 "추천: CLI" + 중지된 실행은 "중지됨"
-- E2E 실측(2026-09-04, 캡처 `D:\temp\claude\d--OneDrive-----------0bin\<session>\scratchpad\agentdock-2x.png`): 채팅 시작→응답, `--resume` 후속 질문, 여러 줄 프롬프트(stdin) → 두 줄 응답, Claude rate_limit → 상태바 "14% · 17:40 ↻ · 공식", 중지 → "중지됨", 폴더 대화상자(D:\dev에서 열림), probe → Codex/Claude "CLI 제시", Gemini "추정"
+### 구조
+- 백엔드 `src-tauri/src`: `models`(CliId 5종·Job·CommandSpec) · `availability`(CLI별 스냅샷 상태 머신, 오류 분류, 리셋·retry-after 추출, import/export) · `scheduler`(`pick_candidate`) · `db`(스키마만, 미배선) · `runner`(tokio 실행, stdin 유지·후속 쓰기, 중지, `run_capture`·`exchange_lines`, PATH에서 .exe 우선 해석 + winget 예비 경로, stderr ANSI 제거) · `adapters/{claude,codex,gemini,antigravity,opencode}`
+- Tauri 커맨드: `start_job`/`continue_job`(model 포함) · `cancel_run` · `respond_permission` · `get_availability` · `recheck_availability` · `pick_cli` · `set_routing_chain` · `set_enabled_clis` · `list_models` · `login_cli`. 이벤트 `agent-event{run_id, cli, event}`, `availability-changed`(스냅샷 배열)
+- 어댑터 계약(`adapters/mod.rs`): probe_command/probe_exchange+interpret · build_command/build_resume_command · parse_event · `keeps_stdin_open` · `stdin_follow_up(job, session_id) -> LineReaction{send, drop_events}` · `permission_reply` · `filter_stderr` · rate_limit_exchange/parse_rate_limits/parse_account · login_flow · version_command · model_listing/parse_models/scan_models
+- 프론트 `src/App.tsx`: 대화 목록(CLI별 세션 `sessions[cli]{sessionId, syncedUpTo}`, 대화 중 CLI 전환 시 `buildHandoff` 문단 자동 첨부) · 승인 카드(허용/세션 동안 허용/거부, 헤더 "승인 대기 N") · 상단 카드 드래그=라우팅 우선순위 · 하단 상태바+상세 패널(사용률·리셋·근거·계정·버전·재검사·로그인) · ⚙ CLI 레지스트리(사용 여부·순위·상태·계정·버전·로그인·모델) · localStorage(`agentdock.projectDir/cli/chain/enabled/model.<cli>`)
+
+### CLI별 대화 전송 방식과 승인 중계 (2026-09-04 전부 실측)
+| CLI | 실행 | 재개 | 승인 중계 | 사용량 |
+|---|---|---|---|---|
+| Claude 2.1.259 | `claude -p --output-format stream-json --input-format stream-json --permission-prompt-tool stdio --permission-mode acceptEdits\|plan [--model]`, 프롬프트는 stdin의 user 메시지 JSON | `--resume <id>` | `control_request/can_use_tool` → `control_response{allow(updatedInput[,updatedPermissions])\|deny}`. 앱 E2E 통과(허용·거부·세션 동안 허용, `--resume`에도 유지) | 스트림 `rate_limit_event`(공식) |
+| Codex 0.152.1 | `codex app-server`(stdio JSON-RPC, jsonrpc 필드 없음): initialize → initialized → `thread/start{cwd, approvalPolicy:"on-request", sandbox, model}` → 응답 thread.id → follow-up `turn/start` | `thread/resume{threadId}` | 서버 요청 `item/commandExecution\|fileChange/requestApproval` → `{id, result:{decision: accept\|acceptForSession\|decline}}`(acceptForSession은 availableDecisions에 있을 때만). 앱 E2E 통과 | 턴 중 `account/rateLimits/updated` + probe `account/rateLimits/read`(공식) |
+| Gemini 0.54.4 | `gemini --acp --approval-mode auto_edit\|plan [-m]`: initialize → `session/new{cwd}` → follow-up `session/prompt` | `session/load{sessionId}`(응답 전 재생 알림은 drop) | `session/request_permission{options}` → `{outcome:{selected, optionId}}`. 프로브·단위 테스트 확인, **앱 E2E는 일일 쿼터 소진으로 미완**(오류 → Cooldown 전환은 확인) | 없음(추정). 429·"exhausted your daily quota" 반응형 쿨다운 |
+| Antigravity 1.1.26 | `agy -p … --output-format stream-json --mode plan\|accept-edits [--dangerously-skip-permissions] [--model]` | `--conversation <id>` | 없음(플랜 모드는 헤드리스에서 자동 거부) | 없음(TUI `/usage`뿐) |
+| OpenCode 1.18.5 | `opencode run --format json --dir … --agent plan\|build [--auto] [-m]`, 여러 줄은 임시 파일 `-f` | `--session <id>` | 없음. `opencode acp`가 같은 ACP로 동작함을 실측(빠름, configOptions `model`·`mode` build/plan, `usage_update`)하나 기본 설정에선 승인을 묻지 않아 보류 | 없음 |
+
+- 승인 공통: 대기 요청은 `AppState.pending`(run_id, request_id)에 보관, 10분 무응답 자동 거부. 러너는 결과(`Completed`)가 오면 stdin을 닫고 5초 뒤에도 살아 있으면 죽인 뒤 정상 종료(0)로 보고(Gemini ACP는 stdin을 닫아도 안 끝남)
+- CLI 동작 메모: Claude acceptEdits는 파일시스템 Bash(`echo >`, mkdir)도 자동 승인, plan은 읽기 전용 명령 자동 실행 → 카드는 python·npm·git 쓰기 등에서 뜬다. Codex는 샌드박스가 막은 명령을 on-request로 다시 묻는다(읽기 전용 샌드박스에서 파일 쓰기 등)
+- 로그인: Claude·Codex·OpenCode·Antigravity·Gemini 모두 앱 데이터 폴더의 `login-<cli>.cmd`를 새 콘솔로 띄우고(러너가 찾은 실행 파일 경로를 `call`, 끝에 `exit`), 콘솔이 열린 동안 8초마다 재검사·10분 상한. Codex 로그아웃→버튼→브라우저→Ready 복귀 E2E 통과. Gemini 버튼은 `/auth` API 키 안내(개인 Google OAuth는 2026-06-18 종료 → AI Pro는 Antigravity)
+- 가용성 모니터: 시작 시 전체 probe → 30초 틱, 주기 probe 5분, 창 포커스 복귀 시 재검사(30초 스로틀), 추정 쿨다운 30분, 재발 시 6시간, 모든 윈도우 리셋 시 복귀. 스냅샷은 `%APPDATA%\com.user.agent-dock\availability.json`에 보존·복원. 로그인 안 됨=빨강, 쿨다운=주황
+- 모델 목록: Claude는 네이티브 바이너리(`%APPDATA%\npm\node_modules\@anthropic-ai\claude-code\bin\claude.exe`) 스캔, Codex `model/list`, Gemini ACP session/new, Antigravity `agy models`, OpenCode `opencode models`
+
+### 오늘(2026-09-04) 통과한 앱 E2E
+채팅·재개·중지·폴더 선택 → 상태바 실데이터 → 드래그 우선순위 → 레지스트리·로그인 버튼(Codex 실제 재로그인) → 대화 중 CLI 전환(Claude↔Antigravity, OpenCode) → 승인 카드(Claude 4회, Codex 2회) → Gemini 쿨다운 전환. 캡처는 세션 scratchpad `agentdock-NN*.png`(세션이 끝나면 사라짐; 결과는 PRD 14장에 기록)
 
 ## 알려진 한계·TODO
 
-- 승인 실시간 중계(2026-09-04): **Claude·Codex·Gemini**. Gemini는 `gemini --acp`(session/new → session/prompt, 재개 session/load, `session/request_permission` → optionId 응답)로 돌리며 load 재생 구간은 `LineReaction.drop_events`로 버린다; stdin을 닫아도 안 끝나 러너가 5초 뒤 정리(정상 종료로 봄). 앱 E2E는 일일 쿼터 소진으로 프롬프트 단계까지만(오류 → Cooldown 전환 확인). OpenCode는 `opencode acp`가 있고 빠르지만 기본 설정에선 승인을 묻지 않아 보류. Codex는 대화 자체를 `codex app-server`(thread/start → turn/start, 재개 thread/resume, 서버 요청 `item/commandExecution/requestApproval` → `{decision}`)로 돌리며 `stdin_follow_up`으로 thread id를 받아 turn/start를 이어 보낸다. 턴 중 `account/rateLimits/updated`로 사용률 실시간 갱신. Claude는 `--permission-prompt-tool stdio` + stream-json 입력(프롬프트는 user 메시지 JSON). 러너가 stdin을 열어 두고 `result` 뒤 닫는다. `respond_permission`(허용·거부·세션 동안 허용=updatedPermissions), 10분 무응답 자동 거부. CLI 동작: acceptEdits는 파일시스템 Bash(`echo >`, mkdir)도 자동 승인, plan은 읽기 전용 명령(echo 등) 자동 실행 → 카드는 python·npm·git 쓰기 등에서 뜬다. Codex(app-server 전환 필요)·Gemini(ACP `session/request_permission`)·OpenCode(serve) 미지원
-- Antigravity 앱 내 대화 E2E 통과(2026-09-04 21:16, 화면 자동 조작): 세션 재개·도구 호출 표시 확인. 읽기 전용(plan) 모드에서는 명령 실행 권한이 헤드리스에서 자동 거부되며 그 안내가 system 줄로 표시됨(쓰기 허용 시 --dangerously-skip-permissions). 사용량은 TUI `/usage`만 있어 헤드리스 신호 없음(추정 경로). AI Pro는 5시간 창 + 주간 상한
-- Gemini CLI는 개인 Google 로그인이 막혀(IneligibleTierError) API 키·flash 전용으로 남김. 필요 없으면 CLI 설정에서 끄기
-- 대화 중 CLI 전환 앱 E2E 통과: Claude(암호어 KIWI-77) → Antigravity 전환 후 암호어 정답 → Claude 복귀(기존 세션 재개, 그사이 대화 3항목 전달) → BACK_OK. OpenCode 앱 내 대화도 통과(OC_APP_OK)
-- 버전은 어댑터별 `version_command`(`--version`) probe로 전 CLI 표시(2026-09-04)
-- Gemini 세션 재개는 ACP `session/load{sessionId}`로 정확히 이어진다(2026-09-04). 이 계정(무료 API 키)은 429 백오프·일일 쿼터로 느리거나 실패하므로 필요 없으면 CLI 설정에서 끄기
-- Gemini 텔레메트리(2026-09-04 검토, 미구현): `GEMINI_TELEMETRY_ENABLED=true` `GEMINI_TELEMETRY_TARGET=local` `GEMINI_TELEMETRY_OUTFILE=<경로>`(또는 프로젝트 settings.json `telemetry`)로 켜면 OTLP JSON에 `gemini_cli.api_error`(model_name, 429 본문 QuotaFailure.violations[].quotaId/…PerDay…|…PerMinute…, RetryInfo.retryDelay), `gemini_cli.api_response`(model, 토큰), `gemini_cli.flash_fallback`, `gemini_cli.model_routing` 기록. 이 계정은 무료 API 키라 pro가 limit 0 → 매번 429 후 flash 폴백. 모델별 한도 감지·장부의 재료
-- Gemini 사용량은 능동 조회 불가(2026-09-04 재확인): CLI가 내부적으로 Code Assist `retrieveUserQuota`를 불러 대화형 화면에만 표시하고, 헤드리스 stream-json·ACP(`gemini --acp`: initialize/session/new 정상) 어디에도 노출하지 않는다. OAuth 토큰은 평문 파일에 없음. 앱은 429·"exhausted your daily quota" 문구와 retry-after 값으로 반응적 쿨다운만 잡는다. ACP는 `loadSession:true`·세션 id를 주므로 `--resume latest` 한계의 대안 후보
-- Codex stderr tracing 로그는 `filter_stderr`로 ERROR·WARN만 "Codex ERROR: …"로 접어 표시(2026-09-04). 러너는 stderr의 ANSI를 제거
-- Codex 모델별 한도(`rateLimitsByLimitId`, 5시간·7일 윈도우)는 아직 표시하지 않고 계정 단위 `rateLimits`만 쓴다
-- 라우팅 체인은 localStorage에만 저장(SQLite 배선 전). 폴더 잠금(`Runner::running_count`)도 미배선
-- 폴더당 동시 1개 잠금(`Runner::running_count`)·SQLite 영속화 미배선
-- 로그인 버튼 E2E 통과(2026-09-04 21:30~22:01): Codex 로그아웃 → 전체 재검사(빨강) → 버튼 → 콘솔 `codex login` → 브라우저 로그인 → Ready 복귀. 콘솔이 열린 동안 8초마다 재검사(LOGIN_POLL), 스크립트 끝 `exit`로 창 자동 닫힘, 러너가 찾은 실행 파일 경로를 `call`(콘솔 PATH에 winget `agy` 없음). OpenCode(콘솔 열린 채 확인)·Antigravity(콘솔 닫힘) 경로도 통과. Claude는 이 개발 세션이 같은 로그인을 쓰고 있어 로그아웃 E2E 생략. Gemini 버튼은 `gemini` 콘솔 + `/auth` API 키 안내(개인 OAuth 종료)
-- OpenCode `--agent plan`이 읽기 전용 내장 에이전트라는 전제
-- 슬래시 명령·스킬(2026-09-04 실측): Claude 커스텀 명령·스킬은 stdin 프롬프트로도 동작(앱에서 `/trigger` 등 OK), Gemini 커스텀 명령 OK, Codex 스킬은 `$이름` 언급, OpenCode run 모드는 `/이름` 미확장. 내장 UI 명령(`/help` `/model` `/auth`…)은 전부 대화형 전용 → 앱 기능(모델 선택·로그인·상태바)으로 대체
-- 보류: 설정 패널 "CLI 추가"(범용 사용자 정의 어댑터). CliId enum → 문자열 id 리팩터링이 선행 과제
-- E2E 자동화 메모: DPI 비인식 프로세스의 `CopyFromScreen`은 125% 모니터에서 캡처가 잘린다(`SetProcessDPIAware` 선행). PowerShell 변수는 대소문자를 구분하지 않아 `$h`/`$H`가 충돌한다. 한글 IME 상태의 `SendKeys`는 자모로 입력되므로 `Set-Clipboard` + `^v`로 붙여넣는다. PowerShell `-match`는 대소문자를 무시하므로 "Not logged in"이 `Logged in`에 걸린다(`-cmatch`). 콘솔 창은 conhost 소유라 cmd 프로세스의 MainWindowHandle이 0이다
+- 자동 폴백 미구현: 쿨다운·한도 시 다음 CLI로 넘기는 건 아직 사용자가 툴바에서 CLI를 바꿔야 한다(handoff 문단 자동 첨부는 됨)
+- Gemini CLI: 이 계정은 무료 API 키(pro 한도 0, 429 백오프, 일일 쿼터)라 느리거나 실패한다. 필요 없으면 CLI 설정에서 끄기. 텔레메트리(`GEMINI_TELEMETRY_*` 로컬 OTLP: api_error 429의 quotaId·retryDelay, flash_fallback, api_response 토큰)로 모델별 한도 감지 가능 — 미구현(PRD 15장)
+- Antigravity: 사용량 신호 없음(추정 경로), plan 모드 명령 허용 규칙(`permissions.allow`) 미검토
+- Codex 모델별 한도(`rateLimitsByLimitId`)는 표시하지 않음(계정 단위만)
+- OpenCode `--agent plan`이 읽기 전용이라는 전제. `/이름` 슬래시는 run 모드에서 미확장(Claude·Gemini 커스텀 명령은 동작, Codex는 `$이름`)
+- 라우팅 체인·대화는 localStorage/메모리뿐(SQLite 미배선). 폴더당 동시 1개 잠금(`Runner::running_count`) 미배선
+- 보류(사용자 결정): 설정 패널 "CLI 추가"(범용 어댑터, CliId enum → 문자열 id 리팩터링 선행), 위젯/컴팩트 도크 창(트레이 단계에서 재검토)
+- (선택) Claude 로그인 버튼 실제 재로그인 E2E — 개발 세션(Claude Code)이 같은 로그인을 써서 생략함
 
-## 다음 단계 (PRD 14장 "구현 현황"과 동일)
+## 다음 단계 (PRD 14장 "다음 작업"과 동일)
 
-1. (선택) OpenCode를 `opencode acp`로 전환(Gemini ACP 코드 공유; configOptions `model`·`mode`(build/plan)로 모델·읽기 전용 지정, sessionCapabilities resume/fork/list, permission.bash=ask 시 승인 중계, usage_update 토큰 장부)
-2. 2단계 자동 폴백: cooldown·429 시 handoff 패킷(`referenced_files` 포함) 생성 → 다음 ready CLI 실행, 무인 정책(쓰기 작업 Git 자동 체크포인트), 서킷 브레이커(동일 오류 3회 → blocked)
-3. Codex 모델별 한도 표시 여부, Antigravity plan 모드 명령 허용 규칙 검토, (선택) Claude 로그인 버튼 실제 재로그인 E2E
-4. 트레이 상주, SQLite 영속화(라우팅 체인·대화·작업·스냅샷), 폴더 잠금
+1. **2단계 자동 폴백**: 실행이 한도·429로 실패해 그 CLI가 Cooldown이 되면, 이미 있는 `buildHandoff`(참조 파일·변경 파일 요약 보강)로 다음 Ready CLI에 자동 재개. 무인 정책(쓰기 작업은 Git 자동 체크포인트 뒤에만), 서킷 브레이커(동일 오류 3회 → blocked), retry-after가 짧으면 재시도·길면 handoff
+2. 트레이 상주, SQLite 영속화(라우팅 체인·대화·작업·스냅샷), 폴더당 동시 1개 잠금
+3. Codex 모델별 한도 표시 여부, Antigravity plan 모드 명령 허용 규칙, (선택) Claude 로그인 재로그인 E2E
+4. (선택) OpenCode를 `opencode acp`로 전환(Gemini ACP 코드 공유, `permission.bash=ask`면 승인 중계, `usage_update` 토큰 장부)
+5. Gemini 텔레메트리 기반 모델별 한도 감지
+
+## E2E 자동화 요령 (PowerShell)
+- `SetProcessDPIAware` 뒤 `PrintWindow(hwnd, hdc, 2)`로 창을 캡처(125% 모니터, 포커스 불필요). 클릭은 `SetCursorPos`+`mouse_event`, 좌표는 캡처 픽셀 = 창 기준(창 원점 GetWindowRect 더함)
+- 한글 IME 때문에 `SendKeys`로 글자를 치지 말고 `Set-Clipboard` + `^v`. 네이티브 `<select>`는 클릭 후 `{HOME}{DOWN}…{ENTER}`
+- PowerShell 변수는 대소문자 무시(`$h`/`$H` 충돌), `-match`도 무시(`-cmatch`). 콘솔 창은 conhost 소유라 cmd의 MainWindowHandle이 0. 앱 재시작 직후 첫 클릭은 포커스에만 쓰인다
+- Bash 도구는 heredoc이 ~16KB를 넘으면 잘리고 `\n`·`\a` 같은 백슬래시 시퀀스를 바꾸므로, 긴 패치는 Write 도구로 .py를 만들어 실행한다
