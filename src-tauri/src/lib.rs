@@ -145,6 +145,23 @@ fn observe_run_event(
 }
 
 async fn probe_one(adapter: &dyn CliAdapter) -> ProbeOutcome {
+    // 줄 단위 교환형 probe (Gemini ACP: session/new 성공 = 인증 OK)
+    if let Some(ex) = adapter.probe_exchange() {
+        let done_id = ex.done_id;
+        return match runner::exchange_lines(
+            &ex.spec,
+            &ex.inputs,
+            move |line| line_has_id(line, done_id),
+            PROBE_TIMEOUT,
+        )
+        .await
+        {
+            Ok(lines) => adapter.interpret_probe_lines(&lines),
+            Err(e) => ProbeOutcome::Unavailable {
+                detail: format!("실행 실패: {e}"),
+            },
+        };
+    }
     let spec = adapter.probe_command();
     match runner::run_capture(&spec, PROBE_TIMEOUT).await {
         Ok(out) if out.timed_out => ProbeOutcome::Unavailable {

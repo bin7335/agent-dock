@@ -74,8 +74,9 @@ fn default_true() -> bool {
 
 /// 고사용량(임박) 임계치. 선제 handoff 임계치와 같은 값 (PRD 6장)
 pub const HIGH_USAGE_THRESHOLD: f64 = 0.95;
-/// 주기 probe 간격. 경량 명령(version·login status)만 실행한다 (가벼움 우선, PRD 5장)
-pub const PROBE_INTERVAL_SECS: i64 = 600;
+/// 주기 probe 간격. 경량 명령(auth status·login status·ACP session/new)만 실행한다 (가벼움 우선, PRD 5장).
+/// 터미널에서 로그아웃한 뒤 화면이 오래 초록으로 남지 않도록 5분 (창 포커스 복귀 시에는 즉시 재검사)
+pub const PROBE_INTERVAL_SECS: i64 = 300;
 /// 사용량 신호 없이 한도 오류만 관측됐을 때의 보수적 추정 쿨다운 (PRD 11장)
 pub const DEFAULT_COOLDOWN_SECS: i64 = 30 * 60;
 /// 리셋 직후 재발 시 장기 쿨다운 — 다른 윈도우 한도로 간주 (PRD 10장)

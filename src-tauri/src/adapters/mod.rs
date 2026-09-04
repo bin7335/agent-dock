@@ -78,6 +78,19 @@ pub trait CliAdapter: Send + Sync {
     /// 설치·인증 확인용 경량 probe 명령
     fn probe_command(&self) -> CommandSpec;
 
+    /// probe를 줄 단위 교환으로 하는 CLI(Gemini ACP)는 이것을 돌려준다. Some이면 probe_command 대신 쓰고
+    /// 결과는 interpret_probe_lines로 해석한다.
+    fn probe_exchange(&self) -> Option<LineExchange> {
+        None
+    }
+
+    /// probe_exchange 응답 줄들의 해석
+    fn interpret_probe_lines(&self, _lines: &[String]) -> ProbeOutcome {
+        ProbeOutcome::Unavailable {
+            detail: "probe 교환 해석 미구현".into(),
+        }
+    }
+
     /// 헤드리스 구조화 실행 명령 (구조화 모드 기본, PRD 8장)
     fn build_command(&self, job: &Job) -> CommandSpec;
 

@@ -31,7 +31,8 @@ ode_modules\@anthropic-ai\claude-codein\claude.exe`, 220MB)를 스캔해 이 CL
 - 우선순위 드래그: 상단 카드(순위 번호)를 HTML5 드래그로 옮기면 `set_routing_chain`이 라우팅 프로필·모니터 순서·추천 CLI를 갱신하고 localStorage(`agentdock.chain`)에 저장, 시작 시 복원. Windows 웹뷰에서 HTML 드래그가 되려면 `tauri.conf.json` 창의 `dragDropEnabled:false` 필요(적용됨). 기본 창 1100×760
 - 스냅샷 보존: 가용성이 바뀔 때마다 `%APPDATA%\com.user.agent-dockvailability.json`에 저장하고 시작 시 `import`로 복원(리셋 지난 윈도우 폐기, 진행 중 쿨다운 유지). Claude 사용률은 실행 스트림에서만 오므로 이 파일이 없으면 재시작 후 다음 Claude 실행까지 "?"다. Gemini는 CLI가 사용량을 제공하지 않아 항상 "?"(추정)이며 429 관측 시에만 추정 쿨다운
 - 상단 카드는 순위·사용 가능 여부만 표시(사용률·근거는 상태바·상세 패널) — 2026-09-04 사용자 요청
-- 계정 표시: 스냅샷 `account{label, plan, method}` — Claude `auth status`(email·subscriptionType·authMethod), Codex app-server `account/read`(한도 교환에 id 3으로 동승, email·planType), OpenCode `auth list`의 제공자 이름, Gemini는 `~/.gemini/google_accounts.json`(active가 비면 old의 마지막 항목을 "이전 로그인 기록"으로). 상태바 상세 패널과 레지스트리 표에 표시. 토큰은 읽지 않는다
+- 계정 표시: 스냅샷 `account{label, plan, method}` — Claude `auth status`(email·subscriptionType·authMethod), Codex app-server `account/read`(한도 교환에 id 3으로 동승, email·planType), OpenCode `auth list`의 제공자 이름, Gemini는 `~/.gemini/settings.json`의 `security.auth.selectedType`(gemini-api-key → "Gemini API 키", oauth-personal → google_accounts.json의 active/old). 상태바 상세 패널과 레지스트리 표에 표시. 토큰은 읽지 않는다
+- Gemini probe는 ACP 교환(`probe_exchange`: initialize → session/new). 성공 = 인증 OK(CLI 제시, agentInfo.version), `Authentication required` 오류 = 로그인 필요(빨강). 주기 probe 5분 + 창 포커스 복귀 시 즉시 재검사(30초 스로틀)
 - 프론트(`src/App.tsx`): 채팅 UI(세션 재개·폴더 고정) + 상단 카드·하단 상태바 실데이터 + 상태바 클릭 상세 패널(윈도우별 사용률·리셋·근거·버전·갱신·다음 재검사·마지막 오류·재검사 버튼) + 툴바 "추천: CLI" + 중지된 실행은 "중지됨"
 - E2E 실측(2026-09-04, 캡처 `D:\temp\claude\d--OneDrive-----------0bin\<session>\scratchpad\agentdock-2x.png`): 채팅 시작→응답, `--resume` 후속 질문, 여러 줄 프롬프트(stdin) → 두 줄 응답, Claude rate_limit → 상태바 "14% · 17:40 ↻ · 공식", 중지 → "중지됨", 폴더 대화상자(D:\dev에서 열림), probe → Codex/Claude "CLI 제시", Gemini "추정"
 

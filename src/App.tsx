@@ -228,6 +228,7 @@ function App() {
   const runMapRef = useRef<Record<number, number>>({});
   const pendingRef = useRef<Record<number, RunEvent[]>>({});
   const endRef = useRef<HTMLDivElement | null>(null);
+  const lastFocusCheckRef = useRef<number>(Date.now());
 
   // 레지스트리 전체 순서(설정 패널)와 활성 CLI 순서(상단·상태바·라우팅)
   const allOrder: CliId[] = statuses.length ? statuses.map((s) => s.cli) : FALLBACK_ORDER;
@@ -278,6 +279,20 @@ function App() {
       .then(setRecommended)
       .catch(() => setRecommended(null));
   }, [statuses]);
+
+  // 창이 포커스를 되찾으면 재검사 — 터미널에서 로그아웃·로그인한 결과가 바로 반영되도록 (30초 이내 반복은 생략)
+  useEffect(() => {
+    const onFocus = () => {
+      const t = Date.now();
+      if (t - lastFocusCheckRef.current < 30_000) return;
+      lastFocusCheckRef.current = t;
+      invoke<AvailabilitySnapshot[]>("recheck_availability", { cli: null })
+        .then(setStatuses)
+        .catch(() => {});
+    };
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, []);
 
   useEffect(() => {
     store(STORAGE_CLI, cli);
