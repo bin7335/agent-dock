@@ -1,3 +1,4 @@
+pub mod antigravity;
 pub mod claude;
 pub mod codex;
 pub mod gemini;
@@ -191,11 +192,12 @@ pub fn strip_ansi(s: &str) -> String {
     out
 }
 
-/// 라우팅 후보 순서(Codex → Claude → Gemini → OpenCode)와 같게 둔다.
+/// 라우팅 후보 순서(Codex → Claude → Antigravity → Gemini → OpenCode)와 같게 둔다.
 pub fn registry() -> Vec<std::sync::Arc<dyn CliAdapter>> {
     vec![
         std::sync::Arc::new(codex::CodexAdapter),
         std::sync::Arc::new(claude::ClaudeAdapter),
+        std::sync::Arc::new(antigravity::AntigravityAdapter),
         std::sync::Arc::new(gemini::GeminiAdapter),
         std::sync::Arc::new(opencode::OpenCodeAdapter),
     ]

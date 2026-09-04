@@ -20,7 +20,7 @@ PRD·설계 근거·스파이크 실측·구현 현황의 원본은 위키 `wiki
 
 - 백엔드(`src-tauri/src`): `models` · `availability`(CLI별 스냅샷 상태 머신 + 오류 분류) · `scheduler`(`pick_candidate` 배선) · `db`(스키마만, 미배선) · `adapters/{claude,codex,gemini}`(명령 조립·이벤트 파싱·probe 해석) · `runner`(tokio 실행, stdin 전달, 중지 플래그, `run_capture` 타임아웃, PATH에서 .exe/.cmd 해석)
 - Tauri 커맨드: `start_job`/`continue_job`(model 인자 포함) · `cancel_run` · `get_availability` · `recheck_availability` · `pick_cli` · `set_routing_chain` · `set_enabled_clis` · `list_models` · `login_cli`. 이벤트: `agent-event`(`{run_id, cli, event}`), `availability-changed`(스냅샷 배열, `enabled` 플래그 포함)
-- 어댑터 4종: codex · claude · gemini · **opencode**(1.18.5 실측: `run --format json --dir … --agent plan|build [--auto] [-m provider/model]`, 이벤트 `text`/`step_finish`, `--session` 재개, probe `auth list`의 "N credentials"). 어댑터 계약에 `login_flow`(Console=콘솔 창에서 CLI 로그인 명령, Exchange=ACP authenticate) · `model_listing`(Static/Exchange/Command) · `parse_models` 추가
+- 어댑터 5종: codex · claude · **antigravity**(`agy` 1.1.26, Google AI Pro 구독 경로 — 2026-06-18부터 Gemini CLI가 개인 계정을 끊고 Antigravity CLI로 이전시킴. `agy -p <프롬프트> --output-format stream-json --mode plan|accept-edits [--dangerously-skip-permissions] [--model X] [--conversation <id>]`, 이벤트 init/step_update(text_delta·tool_info)/result(status·response·usage), probe·모델 목록 `agy models`(탭 구분, 14종: gemini-3.8/3.7/3.6-flash high·medium·low, gemini-3.1-pro high·low, claude-sonnet-4-6, claude-opus-4-6-thinking, gpt-oss-120b), 로그인은 대화형 `agy` 첫 실행의 브라우저 흐름(자격증명은 Windows 자격 증명 관리자), 설치 `winget install Google.AntigravityCLI`(포터블 링크 `%LOCALAPPDATA%\Microsoft\WinGet\Linksgy.exe` — runner가 예비 경로로 탐색). 스킬은 워크스페이스 `.agents/skills`(위키 구조와 동일)·전역 `~/.gemini/antigravity-cli/skills`) · gemini(API 키, 무료 티어라 flash만) · **opencode**(1.18.5 실측: `run --format json --dir … --agent plan|build [--auto] [-m provider/model]`, 이벤트 `text`/`step_finish`, `--session` 재개, probe `auth list`의 "N credentials"). 어댑터 계약에 `login_flow`(Console=콘솔 창에서 CLI 로그인 명령, Exchange=ACP authenticate) · `model_listing`(Static/Exchange/Command) · `parse_models` 추가
 - CLI 레지스트리 패널(⚙ CLI 설정): 사용 여부(끄면 상태바·라우팅·probe 제외, localStorage `agentdock.enabled`), 로그인 버튼, 모델 선택(localStorage `agentdock.model.<cli>`, 툴바에도 현재 CLI용 선택). 모델 목록: Claude는 목록 명령이 없어 설치된 네이티브 바이너리(`%APPDATA%
 pm
 ode_modules\@anthropic-ai\claude-codein\claude.exe`, 220MB)를 스캔해 이 CLI가 아는 정식 id(`claude-<계열>-<메이저>[-<마이너>]`, 날짜·v1 변형 제외)를 별칭 4개 뒤에 나열(`ModelListing::Scan`, 계정 가용 여부는 실행 시 확인), Codex app-server `model/list`(limit 필요), Gemini ACP `session/new`의 availableModels, OpenCode `opencode models`
@@ -40,6 +40,8 @@ ode_modules\@anthropic-ai\claude-codein\claude.exe`, 220MB)를 스캔해 이 CL
 
 ## 알려진 한계·TODO
 
+- Antigravity 앱 내 대화 E2E 미수행(헤드리스 stream-json·모델 목록은 실측). 사용량은 TUI `/usage`만 있어 헤드리스 신호 없음(추정 경로). AI Pro는 5시간 창 + 주간 상한
+- Gemini CLI는 개인 Google 로그인이 막혀(IneligibleTierError) API 키·flash 전용으로 남김. 필요 없으면 CLI 설정에서 끄기
 - 대화 중 CLI 전환은 앱 UI 기준 E2E 미수행(handoff 문단으로 Claude→Codex 암호어 전달은 CLI 직접 호출로 검증)
 - Claude·Codex probe는 버전을 안 돌려줘 상세 패널이 "버전 ?" → `--version` 별도 probe 추가 여지
 - Gemini 세션 재개는 UUID를 못 받아 `--resume latest` 의존

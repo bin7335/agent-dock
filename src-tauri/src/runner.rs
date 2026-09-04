@@ -268,7 +268,14 @@ fn resolve_program(program: &str) -> Option<PathBuf> {
         return None;
     }
     let path = std::env::var_os("PATH")?;
-    find_in_dirs(program, std::env::split_paths(&path))
+    let mut dirs: Vec<PathBuf> = std::env::split_paths(&path).collect();
+    // winget 포터블 설치(Antigravity CLI `agy` 등)는 PATH 갱신이 새 셸부터 적용되므로 링크 폴더를 예비로 본다
+    if let Ok(local) = std::env::var("LOCALAPPDATA") {
+        let local = Path::new(&local);
+        dirs.push(local.join("Microsoft").join("WinGet").join("Links"));
+        dirs.push(local.join("agy").join("bin"));
+    }
+    find_in_dirs(program, dirs)
 }
 
 /// PATH 전체에서 네이티브 .exe를 먼저 찾고, 없으면 .cmd → .bat 순으로 찾는다.

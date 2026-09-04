@@ -1,7 +1,7 @@
 // Rust 쪽 models.rs · availability.rs · adapters/mod.rs와 1:1로 대응하는 프론트 타입.
 // Tauri 이벤트/커맨드의 serde 직렬화 형태(snake_case)를 그대로 따른다.
 
-export type CliId = "codex" | "claude" | "gemini" | "opencode";
+export type CliId = "codex" | "claude" | "gemini" | "opencode" | "antigravity";
 
 export type AvailabilityState =
   | "available"

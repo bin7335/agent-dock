@@ -16,7 +16,13 @@ impl Default for RoutingProfile {
     fn default() -> Self {
         Self {
             name: "코딩 작업".into(),
-            chain: vec![CliId::Codex, CliId::Claude, CliId::Gemini, CliId::Opencode],
+            chain: vec![
+                CliId::Codex,
+                CliId::Claude,
+                CliId::Antigravity,
+                CliId::Gemini,
+                CliId::Opencode,
+            ],
             max_auto_handoffs: 2,
         }
     }

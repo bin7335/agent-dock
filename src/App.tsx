@@ -10,10 +10,11 @@ const CLI_LABEL: Record<CliId, string> = {
   claude: "Claude",
   gemini: "Gemini",
   opencode: "OpenCode",
+  antigravity: "Antigravity",
 };
 
 // 백엔드 get_availability가 오기 전까지의 표시 순서 (라우팅 기본 체인과 동일)
-const FALLBACK_ORDER: CliId[] = ["codex", "claude", "gemini", "opencode"];
+const FALLBACK_ORDER: CliId[] = ["codex", "claude", "antigravity", "gemini", "opencode"];
 
 const STATE_LABEL: Record<AvailabilitySnapshot["state"], string> = {
   available: "Ready",
@@ -43,7 +44,7 @@ const STORAGE_CHAIN = "agentdock.chain";
 const STORAGE_ENABLED = "agentdock.enabled";
 const STORAGE_MODEL_PREFIX = "agentdock.model.";
 
-const ALL_CLIS: CliId[] = ["codex", "claude", "gemini", "opencode"];
+const ALL_CLIS: CliId[] = ["codex", "claude", "gemini", "opencode", "antigravity"];
 
 function parseCliList(raw: string): CliId[] {
   return raw

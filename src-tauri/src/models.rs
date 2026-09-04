@@ -8,6 +8,8 @@ pub enum CliId {
     Codex,
     Gemini,
     Opencode,
+    /// Antigravity CLI(`agy`) — Google AI Pro/Ultra 구독 경로 (2026-09-04 추가)
+    Antigravity,
 }
 
 impl CliId {
@@ -17,6 +19,7 @@ impl CliId {
             CliId::Codex => "Codex",
             CliId::Gemini => "Gemini",
             CliId::Opencode => "OpenCode",
+            CliId::Antigravity => "Antigravity",
         }
     }
 }
