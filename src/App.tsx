@@ -60,18 +60,29 @@ interface ChatItem {
   text: string;
   runId: number | null;
   ts: string;
+  /** 이 항목을 만든 CLI (assistant·tool·system). 사용자 항목은 없음 */
+  cli?: CliId;
 }
 
 type ConvState = "idle" | "running" | "failed";
 
-/** 하나의 CLI 세션과 그 위에서 오간 메시지들. 후속 메시지는 sessionId로 이어진다. */
+/** CLI 하나의 세션 상태. syncedUpTo = 이 CLI가 이미 알고 있는 대화 항목 수 (그 뒤의 항목은 다음 메시지에 넘겨준다) */
+interface CliSession {
+  sessionId: string | null;
+  syncedUpTo: number;
+}
+
+/**
+ * 하나의 대화. cli는 지금 메시지를 받을 CLI이며 대화 중 바꿀 수 있다.
+ * CLI마다 자기 세션(sessions)을 유지하고, 다른 CLI에서 오간 항목은 handoff 문단으로 넘겨 문맥을 잇는다 (PRD 5장 작업 단위 전환).
+ */
 interface Conversation {
   id: number;
   cli: CliId;
   projectDir: string;
   allowWrites: boolean;
   title: string;
-  sessionId: string | null;
+  sessions: Partial<Record<CliId, CliSession>>;
   state: ConvState;
   activeRunId: number | null;
   items: ChatItem[];
@@ -83,64 +94,94 @@ function now(): string {
   return new Date().toTimeString().slice(0, 8);
 }
 
-function item(role: Role, text: string, runId: number | null): ChatItem {
+function item(role: Role, text: string, runId: number | null, cli?: CliId): ChatItem {
   itemSeq += 1;
-  return { id: itemSeq, role, text, runId, ts: now() };
+  return { id: itemSeq, role, text, runId, ts: now(), cli };
+}
+
+function sessionOf(conv: Conversation, cli: CliId): CliSession {
+  return conv.sessions[cli] ?? { sessionId: null, syncedUpTo: 0 };
+}
+
+/** 다른 CLI에서 오간 대화 항목을 새 CLI(또는 돌아온 CLI)에게 넘기는 문단 (PRD 6장 handoff 패킷의 대화판) */
+function buildHandoff(conv: Conversation, target: CliId, carried: ChatItem[], resuming: boolean): string {
+  const from = Array.from(new Set(carried.map((i) => i.cli).filter((c): c is CliId => !!c && c !== target)))
+    .map((c) => CLI_LABEL[c])
+    .join(", ");
+  const lines = carried.map((i) => {
+    if (i.role === "user") return `사용자: ${i.text}`;
+    if (i.role === "assistant") return `${i.cli ? CLI_LABEL[i.cli] : "AI"}: ${i.text}`;
+    return `(도구) ${i.text}`;
+  });
+  let body = lines.join("\n\n");
+  if (body.length > 16000) body = "(앞부분 생략)\n" + body.slice(-16000);
+  const head = resuming
+    ? `[Agent Dock] 이 대화는 당신(${CLI_LABEL[target]})의 세션에서 잠시 다른 AI CLI(${from || "다른 CLI"})로 넘어갔다가 돌아왔습니다. 그사이 오간 대화를 먼저 읽고, 마지막의 새 요청에 이어서 작업하세요. 그사이 파일이 바뀌었을 수 있으니 현재 파일 상태를 확인하세요.`
+    : `[Agent Dock] 이 대화는 다른 AI CLI(${from || "다른 CLI"})에서 진행되다가 지금부터 당신(${CLI_LABEL[target]})이 이어받습니다. 프로젝트 폴더는 ${conv.projectDir}입니다. 아래 대화 기록을 읽고 마지막의 새 요청에 이어서 작업하세요. 이미 변경된 파일은 다시 만들지 말고 현재 상태를 확인하세요.`;
+  return `${head}\n\n--- 그동안의 대화 ---\n${body}\n--- 대화 끝 ---\n\n새 요청:\n`;
 }
 
 function applyEvent(conv: Conversation, ev: RunEvent): Conversation {
-  const { run_id, event } = ev;
+  const { run_id, event, cli } = ev;
   const items = conv.items;
   switch (event.kind) {
-    case "session_started":
-      return conv.sessionId ? conv : { ...conv, sessionId: event.session_id };
+    case "session_started": {
+      const sess = sessionOf(conv, cli);
+      if (sess.sessionId) return conv;
+      return { ...conv, sessions: { ...conv.sessions, [cli]: { ...sess, sessionId: event.session_id } } };
+    }
     case "message": {
       if (!event.text) return conv;
       const last = items[items.length - 1];
       if (event.delta && last && last.role === "assistant" && last.runId === run_id) {
         return { ...conv, items: [...items.slice(0, -1), { ...last, text: last.text + event.text }] };
       }
-      return { ...conv, items: [...items, item("assistant", event.text, run_id)] };
+      return { ...conv, items: [...items, item("assistant", event.text, run_id, cli)] };
     }
     case "tool_use":
-      return { ...conv, items: [...items, item("tool", `${event.tool} ${event.detail.slice(0, 160)}`, run_id)] };
+      return { ...conv, items: [...items, item("tool", `${event.tool} ${event.detail.slice(0, 160)}`, run_id, cli)] };
     case "file_change":
       return {
         ...conv,
-        items: [...items, item("tool", `${event.ok ? "파일 변경" : "변경 실패"}: ${event.path}`, run_id)],
+        items: [...items, item("tool", `${event.ok ? "파일 변경" : "변경 실패"}: ${event.path}`, run_id, cli)],
       };
     case "stderr":
-      return { ...conv, items: [...items, item("system", event.text, run_id)] };
+      return { ...conv, items: [...items, item("system", event.text, run_id, cli)] };
     case "completed": {
       if (!event.ok) {
         return {
           ...conv,
           state: "failed",
-          items: [...items, item("error", `실패: ${event.summary || "(사유 없음)"}`, run_id)],
+          items: [...items, item("error", `실패: ${event.summary || "(사유 없음)"}`, run_id, cli)],
         };
       }
       // Claude의 result는 마지막 assistant 텍스트와 같으므로, 본문이 없었을 때만 요약을 표시
       const hasAssistant = items.some((i) => i.role === "assistant" && i.runId === run_id);
       if (event.summary && !hasAssistant) {
-        return { ...conv, items: [...items, item("assistant", event.summary, run_id)] };
+        return { ...conv, items: [...items, item("assistant", event.summary, run_id, cli)] };
       }
       return conv;
     }
     case "process_exited": {
+      let next: Conversation;
       if (event.cancelled) {
-        return { ...conv, state: "idle", activeRunId: null, items: [...items, item("system", "중지됨", run_id)] };
+        next = { ...conv, state: "idle", activeRunId: null, items: [...items, item("system", "중지됨", run_id, cli)] };
+      } else {
+        const abnormal = event.code !== null && event.code !== 0;
+        const failed = conv.state === "failed" || abnormal;
+        next = {
+          ...conv,
+          state: failed ? "failed" : "idle",
+          activeRunId: null,
+          items:
+            abnormal && conv.state !== "failed"
+              ? [...items, item("error", `프로세스 비정상 종료 (code ${event.code})`, run_id, cli)]
+              : items,
+        };
       }
-      const abnormal = event.code !== null && event.code !== 0;
-      const failed = conv.state === "failed" || abnormal;
-      return {
-        ...conv,
-        state: failed ? "failed" : "idle",
-        activeRunId: null,
-        items:
-          abnormal && conv.state !== "failed"
-            ? [...items, item("error", `프로세스 비정상 종료 (code ${event.code})`, run_id)]
-            : items,
-      };
+      // 이 CLI의 세션은 여기까지의 대화를 알고 있다
+      const sess = sessionOf(next, cli);
+      return { ...next, sessions: { ...next.sessions, [cli]: { ...sess, syncedUpTo: next.items.length } } };
     }
     default:
       return conv;
@@ -401,6 +442,21 @@ function App() {
     }
   }
 
+  /** 대화 중 CLI 전환: 다음 메시지부터 새 CLI가 받고, 그 CLI가 모르는 항목은 handoff 문단으로 함께 넘어간다 */
+  function switchConversationCli(convId: number, target: CliId) {
+    setConvs((prev) =>
+      prev.map((c) => {
+        if (c.id !== convId || c.cli === target || c.state === "running") return c;
+        const sess = sessionOf(c, target);
+        const pending = c.items.length - sess.syncedUpTo;
+        const note = sess.sessionId
+          ? `→ ${CLI_LABEL[target]}(기존 세션)으로 전환. 그사이 대화 ${pending}개 항목을 다음 메시지에 함께 넘깁니다.`
+          : `→ ${CLI_LABEL[target]}로 전환. 다음 메시지에 지금까지의 대화 ${pending}개 항목을 함께 넘깁니다.`;
+        return { ...c, cli: target, items: [...c.items, item("system", note, null, target)] };
+      }),
+    );
+  }
+
   async function send() {
     const text = input.trim();
     if (!text) return;
@@ -419,7 +475,7 @@ function App() {
         projectDir,
         allowWrites,
         title: text.slice(0, 30),
-        sessionId: null,
+        sessions: {},
         state: "running",
         activeRunId: null,
         items: [],
@@ -429,16 +485,24 @@ function App() {
       setSelectedId(fresh.id);
     }
     const convId = conv.id;
+    const target = conv.cli;
+    const sess = sessionOf(conv, target);
+    // 이 CLI가 아직 모르는 항목(다른 CLI에서 오간 대화·파일 변경)만 넘긴다. 시스템·오류 줄은 제외
+    const carried = conv.items
+      .slice(sess.syncedUpTo)
+      .filter((i) => i.role === "user" || i.role === "assistant" || (i.role === "tool" && i.text.startsWith("파일 변경")));
+    const request = carried.length ? buildHandoff(conv, target, carried, sess.sessionId !== null) + text : text;
+
     setConvs((prev) =>
       prev.map((c) => (c.id === convId ? { ...c, state: "running", items: [...c.items, item("user", text, null)] } : c)),
     );
     setInput("");
 
     try {
-      const model = modelChoice[conv.cli] || null;
-      const args = { cli: conv.cli, request: text, projectDir: conv.projectDir, allowWrites: conv.allowWrites, model };
-      const runId = conv.sessionId
-        ? await invoke<number>("continue_job", { ...args, sessionId: conv.sessionId })
+      const model = modelChoice[target] || null;
+      const args = { cli: target, request, projectDir: conv.projectDir, allowWrites: conv.allowWrites, model };
+      const runId = sess.sessionId
+        ? await invoke<number>("continue_job", { ...args, sessionId: sess.sessionId })
         : await invoke<number>("start_job", args);
       runMapRef.current[runId] = convId;
       setConvs((prev) => prev.map((c) => (c.id === convId ? { ...c, activeRunId: runId } : c)));
@@ -448,7 +512,7 @@ function App() {
     } catch (e) {
       setConvs((prev) =>
         prev.map((c) =>
-          c.id === convId ? { ...c, state: "failed", items: [...c.items, item("error", String(e), null)] } : c,
+          c.id === convId ? { ...c, state: "failed", items: [...c.items, item("error", String(e), null, target)] } : c,
         ),
       );
     }
@@ -547,7 +611,14 @@ function App() {
           {convs.length === 0 && <p className="empty">아래에 메시지를 입력하면 새 대화가 시작됩니다.</p>}
           <ul>
             {convs.map((c) => (
-              <li key={c.id} className={c.id === selectedId ? "selected" : ""} onClick={() => setSelectedId(c.id)}>
+              <li
+                key={c.id}
+                className={c.id === selectedId ? "selected" : ""}
+                onClick={() => {
+                  setSelectedId(c.id);
+                  setCli(c.cli);
+                }}
+              >
                 <span className="job-title">
                   [{c.cli}] {c.title}
                 </span>
@@ -563,7 +634,9 @@ function App() {
           {current ? (
             <p className="run-meta">
               [{current.cli}] {current.projectDir}
-              {current.sessionId ? ` · 세션 ${current.sessionId.slice(0, 8)}…` : ""}
+              {sessionOf(current, current.cli).sessionId
+                ? ` · 세션 ${sessionOf(current, current.cli).sessionId!.slice(0, 8)}…`
+                : " · 새 세션"}
               {current.allowWrites ? " · 쓰기 허용" : " · 읽기 전용"} · 모델 {modelLabel(current.cli)}
             </p>
           ) : (
@@ -614,7 +687,16 @@ function App() {
           <button className="folder-btn" onClick={() => void pickFolder()} title="프로젝트 폴더 선택 (새 대화에 적용)">
             📁 {projectDir || "프로젝트 폴더 선택"}
           </button>
-          <select value={cli} onChange={(e) => setCli(e.currentTarget.value as CliId)} title="새 대화에 쓸 CLI">
+          <select
+            value={cli}
+            onChange={(e) => {
+              const next = e.currentTarget.value as CliId;
+              setCli(next);
+              if (current) switchConversationCli(current.id, next);
+            }}
+            title={current ? "현재 대화를 이 CLI로 전환 (이전 대화를 함께 넘김)" : "새 대화에 쓸 CLI"}
+            disabled={running}
+          >
             {cliOrder.map((id) => (
               <option key={id} value={id}>
                 {CLI_LABEL[id]}

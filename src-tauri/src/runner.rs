@@ -271,13 +271,16 @@ fn resolve_program(program: &str) -> Option<PathBuf> {
     find_in_dirs(program, std::env::split_paths(&path))
 }
 
-/// 디렉터리 순서대로, 각 디렉터리 안에서는 .exe → .cmd → .bat 순으로 찾는다.
+/// PATH 전체에서 네이티브 .exe를 먼저 찾고, 없으면 .cmd → .bat 순으로 찾는다.
+/// .cmd 셔임은 cmd.exe를 거치므로 줄바꿈이 든 인자를 넘길 수 없다(Codex 실측: cmd 경유 시 첫 줄만 전달,
+/// codex.exe 직접 실행은 정상). PATH 순서와 달라질 수 있지만 같은 이름의 exe와 cmd는 같은 프로그램이다.
 pub(crate) fn find_in_dirs(
     program: &str,
     dirs: impl IntoIterator<Item = PathBuf>,
 ) -> Option<PathBuf> {
-    for dir in dirs {
-        for ext in ["exe", "cmd", "bat"] {
+    let dirs: Vec<PathBuf> = dirs.into_iter().collect();
+    for ext in ["exe", "cmd", "bat"] {
+        for dir in &dirs {
             let candidate = dir.join(format!("{program}.{ext}"));
             if candidate.is_file() {
                 return Some(candidate);
@@ -308,16 +311,18 @@ mod tests {
         std::fs::write(b.join("bar.cmd"), "").unwrap();
         std::fs::write(b.join("bar.exe"), "").unwrap();
 
-        // 앞선 디렉터리의 .cmd가 뒤 디렉터리의 .exe보다 우선 (PATH 의미 유지)
+        // 뒤 디렉터리라도 네이티브 .exe가 앞 디렉터리의 .cmd 셔임보다 우선 (줄바꿈 인자 전달 가능)
         assert_eq!(
             find_in_dirs("foo", [a.clone(), b.clone()]),
-            Some(a.join("foo.cmd"))
+            Some(b.join("foo.exe"))
         );
-        // 같은 디렉터리 안에서는 .exe 우선
         assert_eq!(
             find_in_dirs("bar", [a.clone(), b.clone()]),
             Some(b.join("bar.exe"))
         );
+        // .exe가 없으면 .cmd
+        std::fs::write(a.join("baz.cmd"), "").unwrap();
+        assert_eq!(find_in_dirs("baz", [a.clone(), b.clone()]), Some(a.join("baz.cmd")));
         assert_eq!(find_in_dirs("none", [a, b]), None);
     }
 

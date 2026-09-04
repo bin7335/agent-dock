@@ -33,12 +33,14 @@ ode_modules\@anthropic-ai\claude-codein\claude.exe`, 220MB)를 스캔해 이 CL
 - 상단 카드는 순위·사용 가능 여부만 표시(사용률·근거는 상태바·상세 패널) — 2026-09-04 사용자 요청
 - 계정 표시: 스냅샷 `account{label, plan, method}` — Claude `auth status`(email·subscriptionType·authMethod), Codex app-server `account/read`(한도 교환에 id 3으로 동승, email·planType), OpenCode `auth list`의 제공자 이름, Gemini는 `~/.gemini/settings.json`의 `security.auth.selectedType`(gemini-api-key → "Gemini API 키", oauth-personal → google_accounts.json의 active/old). 상태바 상세 패널과 레지스트리 표에 표시. 토큰은 읽지 않는다
 - Gemini probe는 ACP 교환(`probe_exchange`: initialize → session/new). 성공 = 인증 OK(CLI 제시, agentInfo.version), `Authentication required` 오류 = 로그인 필요(빨강). 주기 probe 5분 + 창 포커스 복귀 시 즉시 재검사(30초 스로틀)
+- 대화 중 CLI 전환(2026-09-04): 대화는 CLI별 세션(`sessions[cli] = {sessionId, syncedUpTo}`)을 유지하고, 툴바 CLI 선택을 바꾸면 현재 대화의 `cli`가 바뀐다. 다음 메시지에 그 CLI가 모르는 항목(다른 CLI에서 오간 사용자·응답·파일 변경)을 `buildHandoff` 문단으로 앞에 붙여 보낸다(새 CLI면 start_job, 기존 세션이면 continue_job + "그사이 대화"). 실행 종료 시 `syncedUpTo`를 갱신. 16,000자 초과분은 앞부분 생략
+- 여러 줄 프롬프트 전달(전환·handoff 전제): Claude stdin, Gemini stdin + `-p ""`, OpenCode는 줄바꿈 있을 때 임시 파일 `-f` 첨부(메시지 뒤에), Codex는 네이티브 exe 인자(PATH 해석을 .exe 우선으로 변경 — cmd 셔임 경유 시 첫 줄만 전달되는 실측)
 - 프론트(`src/App.tsx`): 채팅 UI(세션 재개·폴더 고정) + 상단 카드·하단 상태바 실데이터 + 상태바 클릭 상세 패널(윈도우별 사용률·리셋·근거·버전·갱신·다음 재검사·마지막 오류·재검사 버튼) + 툴바 "추천: CLI" + 중지된 실행은 "중지됨"
 - E2E 실측(2026-09-04, 캡처 `D:\temp\claude\d--OneDrive-----------0bin\<session>\scratchpad\agentdock-2x.png`): 채팅 시작→응답, `--resume` 후속 질문, 여러 줄 프롬프트(stdin) → 두 줄 응답, Claude rate_limit → 상태바 "14% · 17:40 ↻ · 공식", 중지 → "중지됨", 폴더 대화상자(D:\dev에서 열림), probe → Codex/Claude "CLI 제시", Gemini "추정"
 
 ## 알려진 한계·TODO
 
-- Codex·Gemini 프롬프트는 아직 인자로 전달 → 줄바꿈이 든 메시지는 spawn 단계에서 오류("batch file arguments are invalid" 계열). stdin 전달 실측 후 어댑터 전환
+- 대화 중 CLI 전환은 앱 UI 기준 E2E 미수행(handoff 문단으로 Claude→Codex 암호어 전달은 CLI 직접 호출로 검증)
 - Claude·Codex probe는 버전을 안 돌려줘 상세 패널이 "버전 ?" → `--version` 별도 probe 추가 여지
 - Gemini 세션 재개는 UUID를 못 받아 `--resume latest` 의존
 - Gemini 사용량은 능동 조회 불가(2026-09-04 재확인): CLI가 내부적으로 Code Assist `retrieveUserQuota`를 불러 대화형 화면에만 표시하고, 헤드리스 stream-json·ACP(`gemini --acp`: initialize/session/new 정상) 어디에도 노출하지 않는다. OAuth 토큰은 평문 파일에 없음. 앱은 429·"exhausted your daily quota" 문구와 retry-after 값으로 반응적 쿨다운만 잡는다. ACP는 `loadSession:true`·세션 id를 주므로 `--resume latest` 한계의 대안 후보
@@ -47,7 +49,7 @@ ode_modules\@anthropic-ai\claude-codein\claude.exe`, 220MB)를 스캔해 이 CL
 - 라우팅 체인은 localStorage에만 저장(SQLite 배선 전). 폴더 잠금(`Runner::running_count`)도 미배선
 - 폴더당 동시 1개 잠금(`Runner::running_count`)·SQLite 영속화 미배선
 - OpenCode 실행 E2E(앱 안에서 대화·재개)와 각 CLI 로그인 버튼 E2E 미수행. Gemini ACP authenticate가 브라우저를 여는지도 미확인
-- OpenCode 프롬프트도 인자 전달(줄바꿈 불가). `--agent plan`이 읽기 전용 내장 에이전트라는 전제
+- OpenCode `--agent plan`이 읽기 전용 내장 에이전트라는 전제
 - 슬래시 명령·스킬(2026-09-04 실측): Claude 커스텀 명령·스킬은 stdin 프롬프트로도 동작(앱에서 `/trigger` 등 OK), Gemini 커스텀 명령 OK, Codex 스킬은 `$이름` 언급, OpenCode run 모드는 `/이름` 미확장. 내장 UI 명령(`/help` `/model` `/auth`…)은 전부 대화형 전용 → 앱 기능(모델 선택·로그인·상태바)으로 대체
 - 보류: 설정 패널 "CLI 추가"(범용 사용자 정의 어댑터). CliId enum → 문자열 id 리팩터링이 선행 과제
 - E2E 자동화 메모: DPI 비인식 프로세스의 `CopyFromScreen`은 125% 모니터에서 캡처가 잘린다(`SetProcessDPIAware` 선행). PowerShell 변수는 대소문자를 구분하지 않아 `$h`/`$H`가 충돌한다. 한글 IME 상태의 `SendKeys`는 자모로 입력되므로 `Set-Clipboard` + `^v`로 붙여넣는다

@@ -51,6 +51,32 @@ fn providers_from_auth_list(text: &str) -> Option<AccountInfo> {
 /// 사용량 신호는 없다(추정 경로). 프롬프트는 인자 전달이라 줄바꿈이 든 메시지는 거부된다 (TODO).
 pub struct OpenCodeAdapter;
 
+/// 줄바꿈이 든 프롬프트는 .cmd 셔임(cmd.exe) 인자로 못 넘기므로 임시 파일에 써서 `-f`로 첨부하고,
+/// 메시지 자리에는 첨부를 읽으라는 한 줄 지시를 둔다 (1.18.5 실측: `-f`는 배열 옵션이라 메시지 뒤에 둬야 함).
+/// 한 줄 프롬프트는 그대로 위치 인자로.
+fn prompt_args(request: &str) -> Vec<String> {
+    if !request.contains('\n') && !request.contains('\r') {
+        return vec![request.to_string()];
+    }
+    let dir = std::env::temp_dir().join("agent-dock");
+    let _ = std::fs::create_dir_all(&dir);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let path = dir.join(format!("opencode-prompt-{nanos}.md"));
+    if std::fs::write(&path, request).is_err() {
+        // 파일을 못 쓰면 줄바꿈을 공백으로 눌러서라도 보낸다
+        return vec![request.replace(['\r', '\n'], " ")];
+    }
+    vec![
+        "The user's message is in the attached file. Read it in full and respond to it exactly as if it had been typed here."
+            .into(),
+        "-f".into(),
+        path.to_string_lossy().into_owned(),
+    ]
+}
+
 impl OpenCodeAdapter {
     fn common_args(job: &Job) -> Vec<String> {
         let mut args = vec![
@@ -91,7 +117,7 @@ impl CliAdapter for OpenCodeAdapter {
 
     fn build_command(&self, job: &Job) -> CommandSpec {
         let mut args = Self::common_args(job);
-        args.push(job.request.clone());
+        args.extend(prompt_args(&job.request));
         CommandSpec {
             program: "opencode".into(),
             args,
@@ -161,7 +187,7 @@ impl CliAdapter for OpenCodeAdapter {
         let mut args = Self::common_args(job);
         args.push("--session".into());
         args.push(session_id.to_string());
-        args.push(job.request.clone());
+        args.extend(prompt_args(&job.request));
         Some(CommandSpec {
             program: "opencode".into(),
             args,
@@ -283,6 +309,16 @@ mod tests {
         assert!(spec.args.windows(2).any(|w| w == ["--agent", "build"]));
         assert!(spec.args.iter().any(|a| a == "--auto"));
         assert!(spec.args.windows(2).any(|w| w == ["--session", "ses_9"]));
+
+        // 여러 줄 프롬프트 → 임시 파일 첨부 (메시지 뒤에 -f)
+        let mut multi = job(false);
+        multi.request = "line one\nline two".into();
+        let spec = OpenCodeAdapter.build_command(&multi);
+        let f = spec.args.iter().position(|a| a == "-f").expect("-f 있어야 함");
+        assert!(spec.args[f - 1].contains("attached file"));
+        let path = &spec.args[f + 1];
+        assert_eq!(std::fs::read_to_string(path).unwrap(), "line one\nline two");
+        let _ = std::fs::remove_file(path);
 
         let listed = "\u{1b}[90m┌\u{1b}[39m  Credentials\n\u{1b}[34m●\u{1b}[39m  OpenCode Zen \u{1b}[90mapi\u{1b}[39m\n\u{1b}[34m●\u{1b}[39m  OpenCode Go api\n\u{1b}[90m└\u{1b}[39m  2 credentials\n";
         match OpenCodeAdapter.interpret_probe(Some(0), listed, "") {

@@ -184,11 +184,13 @@ impl CliAdapter for GeminiAdapter {
         }
     }
 
+    /// 프롬프트는 stdin으로 넘긴다 (`-p ""`: "-p는 stdin 입력 뒤에 덧붙는다" 실측, 2026-09-04) —
+    /// gemini.cmd 셔임은 줄바꿈 인자를 못 받으므로 여러 줄·handoff 프롬프트를 위해 필요하다.
     fn build_command(&self, job: &Job) -> CommandSpec {
         let approval = if job.allow_writes { "auto_edit" } else { "plan" };
         let mut args = vec![
             "-p".to_string(),
-            job.request.clone(),
+            String::new(),
             "-o".into(),
             "stream-json".into(),
             "--approval-mode".into(),
@@ -204,7 +206,7 @@ impl CliAdapter for GeminiAdapter {
             // 비신뢰 폴더 헤드리스 거부(exit 55) 우회 — 스파이크 0 실측
             env: vec![("GEMINI_CLI_TRUST_WORKSPACE".into(), "true".into())],
             cwd: job.project_dir.clone(),
-            stdin: None,
+            stdin: Some(job.request.clone()),
         }
     }
 
@@ -404,5 +406,8 @@ mod tests {
         };
         let spec = GeminiAdapter.build_command(&job);
         assert!(spec.args.windows(2).any(|w| w == ["-m", "gemini-2.5-pro"]));
+        assert_eq!(spec.stdin.as_deref(), Some("hi"), "프롬프트는 stdin");
+        assert!(spec.args.windows(2).any(|w| w == ["-p", ""]));
+        assert!(!spec.args.iter().any(|a| a == "hi"));
     }
 }
