@@ -15,8 +15,12 @@ use crate::models::CommandSpec;
 /// 실행 이벤트 수신 콜백. run_id와 어댑터가 파싱한 이벤트를 받는다.
 pub type EventSink = Arc<dyn Fn(u64, AgentEvent) + Send + Sync>;
 
+/// 열어 둔 stdin (keeps_stdin_open CLI). None이면 이미 닫혔거나 열어 두지 않는 CLI
+type StdinSlot = Arc<Mutex<Option<tokio::process::ChildStdin>>>;
+
 struct RunControl {
     cancel_tx: mpsc::Sender<()>,
+    stdin: StdinSlot,
     /// 사용자가 중지를 요청했는지. 종료 이벤트에서 "중지됨"과 "비정상 종료"를 구분한다.
     cancelled: Arc<AtomicBool>,
 }
@@ -64,12 +68,28 @@ impl Runner {
         let mut child = cmd.spawn()?;
         let run_id = self.next_id.fetch_add(1, Ordering::Relaxed) + 1;
 
+        let keep_open = adapter.keeps_stdin_open();
+        let stdin_slot: StdinSlot = Arc::new(Mutex::new(None));
         if let Some(input) = spec.stdin.clone() {
             let mut stdin = child.stdin.take().expect("stdin piped");
-            tokio::spawn(async move {
-                let _ = stdin.write_all(input.as_bytes()).await;
-                let _ = stdin.shutdown().await;
-            });
+            if keep_open {
+                // 프롬프트를 쓴 뒤에도 열어 둔다 — 승인 응답(write_stdin)을 이어서 보내기 위해.
+                // 슬롯을 먼저 채우고 쓰기 동안 잠가, 응답이 프롬프트보다 먼저 나가지 않게 한다
+                *stdin_slot.lock().await = Some(stdin);
+                let slot = Arc::clone(&stdin_slot);
+                tokio::spawn(async move {
+                    let mut guard = slot.lock().await;
+                    if let Some(s) = guard.as_mut() {
+                        let _ = s.write_all(input.as_bytes()).await;
+                        let _ = s.flush().await;
+                    }
+                });
+            } else {
+                tokio::spawn(async move {
+                    let _ = stdin.write_all(input.as_bytes()).await;
+                    let _ = stdin.shutdown().await;
+                });
+            }
         }
         let stdout = child.stdout.take().expect("stdout piped");
         let stderr = child.stderr.take().expect("stderr piped");
@@ -80,6 +100,7 @@ impl Runner {
             run_id,
             RunControl {
                 cancel_tx,
+                stdin: Arc::clone(&stdin_slot),
                 cancelled: Arc::clone(&cancelled),
             },
         );
@@ -102,8 +123,14 @@ impl Runner {
                     tokio::select! {
                         maybe = lines.next_line() => match maybe {
                             Ok(Some(line)) => {
+                                let mut finished = false;
                                 for ev in adapter.parse_event(&line) {
+                                    finished |= matches!(ev, AgentEvent::Completed { .. });
                                     sink(run_id, ev);
+                                }
+                                // stream-json 입력 CLI는 stdin이 닫혀야 종료한다 — 결과가 오면 닫는다
+                                if finished && keep_open {
+                                    stdin_slot.lock().await.take();
                                 }
                             }
                             _ => break,
@@ -127,6 +154,25 @@ impl Runner {
         }
 
         Ok(run_id)
+    }
+
+    /// 열어 둔 stdin에 한 줄을 보낸다 (승인 응답 등). run이 없거나 stdin이 닫혔으면 false.
+    pub async fn write_stdin(&self, run_id: u64, line: &str) -> bool {
+        let slot = match self.procs.lock().await.get(&run_id) {
+            Some(ctrl) => Arc::clone(&ctrl.stdin),
+            None => return false,
+        };
+        let mut guard = slot.lock().await;
+        match guard.as_mut() {
+            Some(stdin) => {
+                let mut buf = line.to_string();
+                if !buf.ends_with('\n') {
+                    buf.push('\n');
+                }
+                stdin.write_all(buf.as_bytes()).await.is_ok() && stdin.flush().await.is_ok()
+            }
+            None => false,
+        }
     }
 
     /// 실행 중 run에 중지 신호를 보낸다. 존재하지 않으면 false.

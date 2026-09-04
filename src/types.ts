@@ -83,7 +83,17 @@ export type AgentEvent =
   | { kind: "rate_limit"; window: string; utilization: number; resets_at: number }
   | { kind: "completed"; ok: boolean; summary: string }
   | { kind: "stderr"; text: string }
-  | { kind: "process_exited"; code: number | null; cancelled: boolean };
+  | { kind: "process_exited"; code: number | null; cancelled: boolean }
+  | {
+      kind: "permission_request";
+      request_id: string;
+      tool: string;
+      description: string;
+      input: string;
+      can_remember: boolean;
+      suggestions: string;
+    }
+  | { kind: "permission_resolved"; request_id: string; allowed: boolean; auto: boolean };
 
 /** Tauri "agent-event" 페이로드 (Rust RunEvent) */
 export interface RunEvent {

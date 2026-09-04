@@ -7,10 +7,14 @@ mod models;
 mod runner;
 mod scheduler;
 
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use adapters::{line_has_id, AgentEvent, CliAdapter, LoginFlow, ModelListing};
+use adapters::{
+    line_has_id, AgentEvent, CliAdapter, LoginFlow, ModelListing, PermissionContext,
+    PermissionDecision,
+};
 use availability::{
     AvailabilityMonitor, AvailabilitySnapshot, AvailabilityState, FailureKind, ProbeOutcome,
 };
@@ -26,6 +30,8 @@ const MODEL_LIST_TIMEOUT: Duration = Duration::from_secs(30);
 const LOGIN_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 /// 로그인 콘솔이 열려 있는 동안 재검사 주기. 브라우저 로그인이 끝나면 창을 닫지 않아도 곧 초록으로 바뀐다.
 const LOGIN_POLL: Duration = Duration::from_secs(8);
+/// 승인 요청 무응답 상한. 지나면 자동 거부해 CLI가 멈춰 있지 않게 한다 (PRD 5장 무인 정책의 최소 안전장치)
+const APPROVAL_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 /// 모니터 틱 간격. 틱마다 쿨다운 만료·재검사 예정만 확인하므로 가볍다.
 const TICK_INTERVAL: Duration = Duration::from_secs(30);
 /// 마지막 가용성 스냅샷 보존 파일 (앱 데이터 폴더). 재시작 후 Claude의 공식 사용률을 잃지 않기 위해.
@@ -36,6 +42,17 @@ struct AppState {
     monitor: Arc<Mutex<AvailabilityMonitor>>,
     /// 라우팅 프로필. 상단 카드 드래그로 chain이 바뀐다 (set_routing_chain).
     profile: Mutex<RoutingProfile>,
+    /// 답을 기다리는 승인 요청 (run_id, request_id) → 원본. respond_permission이 꺼내 쓴다
+    pending: PendingMap,
+}
+
+type PendingMap = Arc<Mutex<HashMap<(u64, String), PendingApproval>>>;
+
+/// 승인 요청 원본. 도구 입력·제안은 JSON 문자열 그대로 보관해 응답에 돌려준다
+struct PendingApproval {
+    cli: CliId,
+    input: String,
+    suggestions: String,
 }
 
 /// 프론트로 흘려보내는 실행 이벤트. listen("agent-event")로 수신한다.
@@ -226,6 +243,146 @@ async fn run_probes(app: &AppHandle, monitor: &Mutex<AvailabilityMonitor>, clis:
     }
 }
 
+/// 승인 요청 이벤트를 보관하고 무응답 타이머를 건다. 실행이 끝나면 그 run의 대기 항목을 비운다.
+fn track_permission(
+    app: &AppHandle,
+    pending: &PendingMap,
+    runner: &Arc<runner::Runner>,
+    adapter: &Arc<dyn CliAdapter>,
+    cli: CliId,
+    run_id: u64,
+    event: &AgentEvent,
+) {
+    match event {
+        AgentEvent::PermissionRequest {
+            request_id,
+            input,
+            suggestions,
+            ..
+        } => {
+            if let Ok(mut p) = pending.lock() {
+                p.insert(
+                    (run_id, request_id.clone()),
+                    PendingApproval {
+                        cli,
+                        input: input.clone(),
+                        suggestions: suggestions.clone(),
+                    },
+                );
+            }
+            let app = app.clone();
+            let pending = Arc::clone(pending);
+            let runner = Arc::clone(runner);
+            let adapter = Arc::clone(adapter);
+            let request_id = request_id.clone();
+            tauri::async_runtime::spawn(async move {
+                tokio::time::sleep(APPROVAL_TIMEOUT).await;
+                let decision = PermissionDecision {
+                    allow: false,
+                    remember: false,
+                    message: Some("Agent Dock: no answer from the user within 10 minutes".into()),
+                };
+                // 이미 답했으면 Err(처리됨)로 조용히 끝난다
+                let _ = resolve_permission(
+                    &app,
+                    &pending,
+                    &runner,
+                    adapter.as_ref(),
+                    run_id,
+                    &request_id,
+                    &decision,
+                    true,
+                )
+                .await;
+            });
+        }
+        AgentEvent::ProcessExited { .. } => {
+            if let Ok(mut p) = pending.lock() {
+                p.retain(|(r, _), _| *r != run_id);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// 대기 중인 승인 요청을 꺼내 CLI에 응답을 보내고, 프론트에 처리 결과 이벤트를 낸다
+#[allow(clippy::too_many_arguments)]
+async fn resolve_permission(
+    app: &AppHandle,
+    pending: &PendingMap,
+    runner: &runner::Runner,
+    adapter: &dyn CliAdapter,
+    run_id: u64,
+    request_id: &str,
+    decision: &PermissionDecision,
+    auto: bool,
+) -> Result<(), String> {
+    let entry = pending
+        .lock()
+        .ok()
+        .and_then(|mut p| p.remove(&(run_id, request_id.to_string())))
+        .ok_or("이미 처리된 승인 요청입니다")?;
+    let ctx = PermissionContext {
+        request_id,
+        input: &entry.input,
+        suggestions: &entry.suggestions,
+    };
+    let line = adapter
+        .permission_reply(&ctx, decision)
+        .ok_or("이 CLI는 승인 중계를 지원하지 않습니다")?;
+    if !runner.write_stdin(run_id, &line).await {
+        return Err("실행이 이미 끝나 응답을 보낼 수 없습니다".into());
+    }
+    let _ = app.emit(
+        "agent-event",
+        RunEvent {
+            run_id,
+            cli: entry.cli,
+            event: AgentEvent::PermissionResolved {
+                request_id: request_id.to_string(),
+                allowed: decision.allow,
+                auto,
+            },
+        },
+    );
+    Ok(())
+}
+
+/// 승인 요청에 답한다 (PRD 4장: 승인 요청을 앱 화면에서 처리). remember=true면 CLI가 제안한 범위로 세션 동안 허용
+#[tauri::command]
+async fn respond_permission(
+    app: AppHandle,
+    state: tauri::State<'_, AppState>,
+    run_id: u64,
+    request_id: String,
+    allow: bool,
+    remember: bool,
+) -> Result<(), String> {
+    let cli = state
+        .pending
+        .lock()
+        .ok()
+        .and_then(|p| p.get(&(run_id, request_id.clone())).map(|e| e.cli))
+        .ok_or("이미 처리된 승인 요청입니다")?;
+    let adapter = adapter_for(cli)?;
+    let decision = PermissionDecision {
+        allow,
+        remember,
+        message: None,
+    };
+    resolve_permission(
+        &app,
+        &state.pending,
+        &state.runner,
+        adapter.as_ref(),
+        run_id,
+        &request_id,
+        &decision,
+        false,
+    )
+    .await
+}
+
 async fn spawn_run(
     app: AppHandle,
     state: &AppState,
@@ -234,8 +391,12 @@ async fn spawn_run(
     spec: CommandSpec,
 ) -> Result<u64, String> {
     let monitor = Arc::clone(&state.monitor);
+    let pending = Arc::clone(&state.pending);
+    let runner = Arc::clone(&state.runner);
+    let adapter_for_sink = Arc::clone(&adapter);
     let sink: runner::EventSink = Arc::new(move |run_id, event| {
         observe_run_event(&app, &monitor, cli, &event);
+        track_permission(&app, &pending, &runner, &adapter_for_sink, cli, run_id, &event);
         let _ = app.emit("agent-event", RunEvent { run_id, cli, event });
     });
     state
@@ -591,6 +752,7 @@ pub fn run() {
             runner: Arc::new(runner::Runner::new()),
             monitor: Arc::clone(&monitor),
             profile: Mutex::new(profile),
+            pending: Arc::new(Mutex::new(HashMap::new())),
         })
         .setup(move |app| {
             let handle = app.handle().clone();
@@ -628,7 +790,8 @@ pub fn run() {
             set_routing_chain,
             set_enabled_clis,
             list_models,
-            login_cli
+            login_cli,
+            respond_permission
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

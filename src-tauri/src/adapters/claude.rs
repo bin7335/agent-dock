@@ -1,6 +1,9 @@
 use serde_json::Value;
 
-use super::{model_opt, probe_detail, AgentEvent, CliAdapter, LoginFlow, ModelListing};
+use super::{
+    model_opt, probe_detail, AgentEvent, CliAdapter, LoginFlow, ModelListing, PermissionContext,
+    PermissionDecision,
+};
 use crate::availability::{AccountInfo, Evidence, ProbeOutcome};
 use crate::models::{CliId, CommandSpec, Job, ModelOption};
 
@@ -17,6 +20,12 @@ impl ClaudeAdapter {
             "--output-format".into(),
             "stream-json".into(),
             "--verbose".into(),
+            // 승인 실시간 중계: 프롬프트는 stream-json user 메시지로 넣고, 도구 승인은 stdout control_request →
+            // stdin control_response로 주고받는다 (2026-09-04 실측: allow·deny 왕복 확인)
+            "--input-format".into(),
+            "stream-json".into(),
+            "--permission-prompt-tool".into(),
+            "stdio".into(),
             "--permission-mode".into(),
             // 파일 쓰기 허용 여부 → --permission-mode 매핑 (스파이크 2차 결과)
             if job.allow_writes { "acceptEdits" } else { "plan" }.into(),
@@ -27,9 +36,60 @@ impl ClaudeAdapter {
         }
         args
     }
+
+    /// stream-json 입력 한 줄: 프롬프트를 user 메시지로 감싼다
+    fn user_message(text: &str) -> String {
+        let mut line = serde_json::json!({
+            "type": "user",
+            "message": {"role": "user", "content": [{"type": "text", "text": text}]}
+        })
+        .to_string();
+        line.push_str("\n");
+        line
+    }
 }
 
 impl CliAdapter for ClaudeAdapter {
+    fn keeps_stdin_open(&self) -> bool {
+        true
+    }
+
+    /// SDK와 같은 형식: allow는 updatedInput(+updatedPermissions), deny는 message
+    fn permission_reply(
+        &self,
+        ctx: &PermissionContext,
+        decision: &PermissionDecision,
+    ) -> Option<String> {
+        let inner = if decision.allow {
+            let input: Value =
+                serde_json::from_str(ctx.input).unwrap_or_else(|_| serde_json::json!({}));
+            let mut r = serde_json::json!({"behavior": "allow", "updatedInput": input});
+            if decision.remember {
+                if let Ok(s) = serde_json::from_str::<Value>(ctx.suggestions) {
+                    if s.as_array().map(|a| !a.is_empty()).unwrap_or(false) {
+                        r["updatedPermissions"] = s;
+                    }
+                }
+            }
+            r
+        } else {
+            serde_json::json!({
+                "behavior": "deny",
+                "message": decision
+                    .message
+                    .clone()
+                    .unwrap_or_else(|| "Agent Dock user declined this action".into())
+            })
+        };
+        Some(
+            serde_json::json!({
+                "type": "control_response",
+                "response": {"subtype": "success", "request_id": ctx.request_id, "response": inner}
+            })
+            .to_string(),
+        )
+    }
+
     fn id(&self) -> CliId {
         CliId::Claude
     }
@@ -51,7 +111,7 @@ impl CliAdapter for ClaudeAdapter {
             args: Self::base_args(job),
             env: vec![],
             cwd: job.project_dir.clone(),
-            stdin: Some(job.request.clone()),
+            stdin: Some(Self::user_message(&job.request)),
         }
     }
 
@@ -73,6 +133,46 @@ impl CliAdapter for ClaudeAdapter {
                 } else {
                     vec![]
                 }
+            }
+            // 도구 승인 요청 (--permission-prompt-tool stdio). 다른 subtype은 쓰지 않는다
+            "control_request" => {
+                let req = v.get("request").cloned().unwrap_or(Value::Null);
+                if req.get("subtype").and_then(Value::as_str) != Some("can_use_tool") {
+                    return vec![];
+                }
+                let suggestions = req
+                    .get("permission_suggestions")
+                    .cloned()
+                    .unwrap_or_else(|| Value::Array(vec![]));
+                let text = |k: &str| {
+                    req.get(k)
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_string()
+                };
+                let tool = if req.get("display_name").and_then(Value::as_str).is_some() {
+                    text("display_name")
+                } else {
+                    text("tool_name")
+                };
+                vec![AgentEvent::PermissionRequest {
+                    request_id: v
+                        .get("request_id")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_string(),
+                    tool,
+                    description: text("description"),
+                    input: req
+                        .get("input")
+                        .map(|i| i.to_string())
+                        .unwrap_or_else(|| "{}".into()),
+                    can_remember: suggestions
+                        .as_array()
+                        .map(|a| !a.is_empty())
+                        .unwrap_or(false),
+                    suggestions: suggestions.to_string(),
+                }]
             }
             // 핵심 한도 신호: 윈도우별 utilization·resetsAt (five_hour / seven_day / seven_day_overage_included)
             "rate_limit_event" => {
@@ -335,7 +435,17 @@ mod tests {
     #[test]
     fn prompt_goes_through_stdin_not_args() {
         let spec = ClaudeAdapter.build_command(&job(false, None));
-        assert_eq!(spec.stdin.as_deref(), Some("line one\nline two"));
+        // 프롬프트는 stream-json user 메시지로 감싸 stdin에 넣는다 (승인 중계용 입력 채널)
+        let stdin: Value = serde_json::from_str(spec.stdin.as_deref().unwrap().trim()).unwrap();
+        assert_eq!(stdin["message"]["content"][0]["text"], "line one\nline two");
+        assert!(spec
+            .args
+            .windows(2)
+            .any(|w| w == ["--input-format", "stream-json"]));
+        assert!(spec
+            .args
+            .windows(2)
+            .any(|w| w == ["--permission-prompt-tool", "stdio"]));
         assert!(!spec.args.iter().any(|a| a.contains("line one")));
         assert!(spec
             .args
@@ -425,3 +535,89 @@ mod tests {
         assert_eq!(ClaudeAdapter.scan_models(b"").len(), 4, "파일이 없으면 별칭만");
     }
 }
+
+#[cfg(test)]
+mod permission_tests {
+    use super::*;
+
+    #[test]
+    fn parses_can_use_tool_request() {
+        let line = r#"{"type":"control_request","request_id":"r1","request":{"subtype":"can_use_tool","tool_name":"Write","display_name":"Write","input":{"file_path":"a.txt","content":"hi"},"description":"a.txt","permission_suggestions":[{"type":"setMode","mode":"acceptEdits","destination":"session"}],"tool_use_id":"t1"}}"#;
+        let evs = ClaudeAdapter.parse_event(line);
+        match &evs[..] {
+            [AgentEvent::PermissionRequest {
+                request_id,
+                tool,
+                description,
+                input,
+                can_remember,
+                ..
+            }] => {
+                assert_eq!(request_id, "r1");
+                assert_eq!(tool, "Write");
+                assert_eq!(description, "a.txt");
+                assert!(input.contains("a.txt"));
+                assert!(*can_remember);
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        assert!(ClaudeAdapter
+            .parse_event(
+                r#"{"type":"control_request","request_id":"r2","request":{"subtype":"hook_callback"}}"#
+            )
+            .is_empty());
+    }
+
+    #[test]
+    fn builds_allow_and_deny_replies() {
+        let ctx = PermissionContext {
+            request_id: "r1",
+            input: r#"{"file_path":"a.txt"}"#,
+            suggestions: r#"[{"type":"setMode","mode":"acceptEdits","destination":"session"}]"#,
+        };
+        let allow = ClaudeAdapter
+            .permission_reply(
+                &ctx,
+                &PermissionDecision {
+                    allow: true,
+                    remember: true,
+                    message: None,
+                },
+            )
+            .unwrap();
+        let v: Value = serde_json::from_str(&allow).unwrap();
+        assert_eq!(v["type"], "control_response");
+        assert_eq!(v["response"]["request_id"], "r1");
+        assert_eq!(v["response"]["response"]["behavior"], "allow");
+        assert_eq!(v["response"]["response"]["updatedInput"]["file_path"], "a.txt");
+        assert_eq!(
+            v["response"]["response"]["updatedPermissions"][0]["mode"],
+            "acceptEdits"
+        );
+        let deny = ClaudeAdapter
+            .permission_reply(
+                &ctx,
+                &PermissionDecision {
+                    allow: false,
+                    remember: false,
+                    message: None,
+                },
+            )
+            .unwrap();
+        let v: Value = serde_json::from_str(&deny).unwrap();
+        assert_eq!(v["response"]["response"]["behavior"], "deny");
+        assert!(v["response"]["response"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("declined"));
+    }
+
+    #[test]
+    fn prompt_is_wrapped_as_stream_json_user_message() {
+        let line = ClaudeAdapter::user_message("hello\nworld");
+        let v: Value = serde_json::from_str(line.trim()).unwrap();
+        assert_eq!(v["type"], "user");
+        assert_eq!(v["message"]["content"][0]["text"], "hello\nworld");
+    }
+}
+

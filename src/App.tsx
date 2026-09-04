@@ -53,7 +53,17 @@ function parseCliList(raw: string): CliId[] {
     .filter((s): s is CliId => (ALL_CLIS as string[]).includes(s));
 }
 
-type Role = "user" | "assistant" | "tool" | "system" | "error";
+type Role = "user" | "assistant" | "tool" | "system" | "error" | "permission";
+
+/** CLI의 도구 승인 요청 (Claude control_request). resolved가 null이면 답을 기다리는 중 */
+interface PermInfo {
+  requestId: string;
+  tool: string;
+  description: string;
+  input: string;
+  canRemember: boolean;
+  resolved: { allowed: boolean; auto: boolean } | null;
+}
 
 interface ChatItem {
   id: number;
@@ -63,6 +73,8 @@ interface ChatItem {
   ts: string;
   /** 이 항목을 만든 CLI (assistant·tool·system). 사용자 항목은 없음 */
   cli?: CliId;
+  /** role === "permission"일 때의 승인 요청 내용 */
+  perm?: PermInfo;
 }
 
 type ConvState = "idle" | "running" | "failed";
@@ -148,6 +160,27 @@ function applyEvent(conv: Conversation, ev: RunEvent): Conversation {
       };
     case "stderr":
       return { ...conv, items: [...items, item("system", event.text, run_id, cli)] };
+    case "permission_request": {
+      const it = item("permission", `승인 요청: ${event.tool}`, run_id, cli);
+      it.perm = {
+        requestId: event.request_id,
+        tool: event.tool,
+        description: event.description,
+        input: event.input,
+        canRemember: event.can_remember,
+        resolved: null,
+      };
+      return { ...conv, items: [...items, it] };
+    }
+    case "permission_resolved":
+      return {
+        ...conv,
+        items: items.map((i) =>
+          i.perm && i.perm.requestId === event.request_id
+            ? { ...i, perm: { ...i.perm, resolved: { allowed: event.allowed, auto: event.auto } } }
+            : i,
+        ),
+      };
     case "completed": {
       if (!event.ok) {
         return {
@@ -187,6 +220,31 @@ function applyEvent(conv: Conversation, ev: RunEvent): Conversation {
     default:
       return conv;
   }
+}
+
+/** 승인 카드에 보여줄 도구 입력 요약: 명령·파일 경로를 앞세우고 전체 JSON은 접어 둔다 */
+function describeInput(raw: string): { headline: string; body: string } {
+  let v: unknown;
+  try {
+    v = JSON.parse(raw);
+  } catch {
+    return { headline: raw.slice(0, 300), body: "" };
+  }
+  if (!v || typeof v !== "object") return { headline: String(v), body: "" };
+  const o = v as Record<string, unknown>;
+  const pretty = JSON.stringify(o, null, 2);
+  const body = pretty.length > 4000 ? pretty.slice(0, 4000) + " …" : pretty;
+  if (typeof o.command === "string") return { headline: `$ ${o.command}`, body };
+  if (typeof o.file_path === "string") {
+    const extra =
+      typeof o.content === "string" ? ` (새 내용 ${o.content.length}자)` : typeof o.new_string === "string" ? " (편집)" : "";
+    return { headline: `${o.file_path}${extra}`, body };
+  }
+  return { headline: "", body };
+}
+
+function pendingApprovals(c: Conversation): number {
+  return c.items.filter((i) => i.perm && !i.perm.resolved).length;
 }
 
 function pct(u: number | null): string {
@@ -344,6 +402,8 @@ function App() {
 
   const current = convs.find((c) => c.id === selectedId) ?? null;
   const running = current?.state === "running";
+  const awaiting = current ? pendingApprovals(current) > 0 : false;
+  const pendingTotal = convs.reduce((n, c) => n + pendingApprovals(c), 0);
   const detail = detailCli ? (statuses.find((s) => s.cli === detailCli) ?? null) : null;
 
   useEffect(() => {
@@ -519,6 +579,60 @@ function App() {
     }
   }
 
+  /** 승인 요청에 답한다. 백엔드가 CLI stdin으로 응답을 보내고 permission_resolved 이벤트로 카드를 갱신한다 */
+  async function respond(it: ChatItem, allow: boolean, remember: boolean) {
+    if (!it.perm || it.runId === null) return;
+    try {
+      await invoke("respond_permission", { runId: it.runId, requestId: it.perm.requestId, allow, remember });
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
+  function renderPermission(it: ChatItem) {
+    const p = it.perm!;
+    const { headline, body } = describeInput(p.input);
+    return (
+      <div className="perm-card">
+        <div className="perm-head">
+          <strong>승인 요청 · {p.tool}</strong>
+          {p.description && <span className="muted">{p.description}</span>}
+        </div>
+        {headline && <div className="perm-headline">{headline}</div>}
+        {body && (
+          <details className="perm-body">
+            <summary>입력 전체</summary>
+            <pre>{body}</pre>
+          </details>
+        )}
+        {p.resolved ? (
+          <div className={`perm-result ${p.resolved.allowed ? "ok" : "no"}`}>
+            {p.resolved.allowed ? "허용됨" : "거부됨"}
+            {p.resolved.auto ? " (10분 무응답 → 자동 거부)" : ""}
+          </div>
+        ) : (
+          <div className="perm-actions">
+            <button className="small primary" onClick={() => void respond(it, true, false)}>
+              허용
+            </button>
+            {p.canRemember && (
+              <button
+                className="small"
+                onClick={() => void respond(it, true, true)}
+                title="이 세션에서 같은 종류를 다시 묻지 않음"
+              >
+                세션 동안 허용
+              </button>
+            )}
+            <button className="small danger" onClick={() => void respond(it, false, false)}>
+              거부
+            </button>
+          </div>
+        )}
+      </div>
+    );
+  }
+
   async function stop() {
     if (!current?.activeRunId) return;
     try {
@@ -599,6 +713,7 @@ function App() {
         <button className="small settings-btn" onClick={() => setSettingsOpen(true)} title="CLI 레지스트리: 사용 여부·로그인·모델">
           ⚙ CLI 설정
         </button>
+        {pendingTotal > 0 && <span className="perm-badge">승인 대기 {pendingTotal}</span>}
       </header>
 
       <main className="main">
@@ -649,13 +764,13 @@ function App() {
             {current?.items.map((it) => (
               <div key={it.id} className={`msg role-${it.role}`}>
                 <span className="msg-ts">{it.ts}</span>
-                <div className="msg-text">{it.text}</div>
+                {it.perm ? renderPermission(it) : <div className="msg-text">{it.text}</div>}
               </div>
             ))}
             {running && (
               <div className="msg role-system">
                 <span className="msg-ts">…</span>
-                <div className="msg-text">응답 대기 중</div>
+                <div className="msg-text">{awaiting ? "승인 대기 중 — 위 요청에 답해 주세요" : "응답 대기 중"}</div>
               </div>
             )}
             {!current && <p className="empty">메시지를 입력하면 위 설정으로 새 대화가 시작됩니다.</p>}

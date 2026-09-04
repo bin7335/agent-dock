@@ -26,6 +26,38 @@ pub enum AgentEvent {
     /// 프로세스 종료. Completed와 별개로 runner가 항상 마지막에 보낸다.
     /// cancelled=true면 사용자 중지로 끝난 것이라 비정상 종료로 다루지 않는다.
     ProcessExited { code: Option<i32>, cancelled: bool },
+    /// CLI가 도구 사용 승인을 요청함 (Claude `control_request/can_use_tool`, 2026-09-04 실측).
+    /// 앱이 respond_permission으로 답할 때까지 CLI는 기다린다. input·suggestions는 JSON 문자열(응답에 그대로 돌려줌)
+    PermissionRequest {
+        request_id: String,
+        tool: String,
+        description: String,
+        input: String,
+        /// "세션 동안 허용" 제안(permission_suggestions)이 있는지
+        can_remember: bool,
+        suggestions: String,
+    },
+    /// 승인 요청이 처리됨. auto=true면 응답 시간 초과로 앱이 자동 거부한 것
+    PermissionResolved {
+        request_id: String,
+        allowed: bool,
+        auto: bool,
+    },
+}
+
+/// 승인 응답을 만들 때 넘기는 원본 요청 (request_id, 도구 입력 JSON, 제안 JSON)
+pub struct PermissionContext<'a> {
+    pub request_id: &'a str,
+    pub input: &'a str,
+    pub suggestions: &'a str,
+}
+
+/// 사용자의 승인 결정. remember=true면 CLI가 제안한 범위(세션 동안 같은 종류 허용)를 함께 적용한다.
+#[derive(Debug, Clone)]
+pub struct PermissionDecision {
+    pub allow: bool,
+    pub remember: bool,
+    pub message: Option<String>,
 }
 
 /// 줄 단위 교환(stdio JSON-RPC 등): 명령, 보낼 줄들, 마지막 요청의 id(이 응답을 받으면 끝).
@@ -122,6 +154,20 @@ pub trait CliAdapter: Send + Sync {
 
     /// 앱에서 띄울 로그인 흐름. None이면 앱 밖에서 로그인해야 한다.
     fn login_flow(&self) -> Option<LoginFlow> {
+        None
+    }
+
+    /// 실행 중 stdin을 열어 두는지 (승인 응답 같은 후속 줄을 보내는 CLI). 기본 false — 프롬프트를 쓰고 닫는다
+    fn keeps_stdin_open(&self) -> bool {
+        false
+    }
+
+    /// 승인 요청에 대한 응답 줄(stdin으로 보냄). 승인 중계를 지원하지 않는 CLI는 None
+    fn permission_reply(
+        &self,
+        _ctx: &PermissionContext,
+        _decision: &PermissionDecision,
+    ) -> Option<String> {
         None
     }
 
