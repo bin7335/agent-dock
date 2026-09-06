@@ -8,7 +8,7 @@ PRD·설계 근거·스파이크 실측·구현 현황의 원본은 위키 `wiki
 2. 개발 환경 (2026-09-03 D:로 이전 완료): Rust `RUSTUP_HOME=D:\tools\rustup`, `CARGO_HOME=D:\tools\cargo`, PATH에 `D:\tools\cargo\bin`. 사용자 `TEMP`/`TMP`=`D:\temp`. VS Build Tools 2022는 `D:\tools\VS2022BuildTools`. `src-tauri\target`은 D:.
 3. 실행: 새 PowerShell 창에서 `cd D:\dev\agent-dock; npm run tauri dev` (src-tauri 변경 시 자동 재빌드·재시작). 옛 셸에 `C:\Users\User\.cargo\bin`이 남아 있으면 `$env:PATH = "D:\tools\cargo\bin;$env:PATH"`.
 4. 검증: `npx tsc --noEmit`(프론트), `cd src-tauri; cargo test`(48개, 무시 1). 실제 claude를 태우는 통합 테스트는 `cargo test real_claude -- --ignored --nocapture`.
-5. git: `main`, 커밋 25개(최근: `aa6db11`). `core.autocrlf=false`. 원격 없음 — 올린다면 private.
+5. git: `main`, 원격 `origin` = GitHub **private** `bin7335/agent-dock`(2026-09-06 최초 푸시, https://github.com/bin7335/agent-dock). `core.autocrlf=false`. 작업 끝에 `git push`. 위키(raw/wiki)는 이 저장소에 넣지 않는다.
 6. **바로 할 일 = 2단계 자동 폴백**(아래 "다음 단계" 1번). 앱 E2E는 화면 자동 조작 스크립트(세션 scratchpad `ad.ps1`: Snap/Click/LoginConsoles)로 했다 — 새 세션이면 다시 만든다(요령은 맨 아래).
 
 ## 현재 상태
