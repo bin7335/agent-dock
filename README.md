@@ -116,6 +116,25 @@ npm run tauri dev        # 첫 빌드 5~10분, 이후 src-tauri 변경 시 자�
 2. ⚙ CLI 설정에서 안 쓰는 CLI를 끄고 모델을 고릅니다.
 3. 툴바에서 프로젝트 폴더를 고른 뒤 메시지를 보냅니다.
 
+### 4-5. AI 에이전트에게 시키기
+
+다른 PC의 로컬 코딩 에이전트(Codex CLI, Claude Code, Antigravity, Gemini CLI 등)에 저장소 주소를 주고 설치·실행을 맡길 수 있습니다. 조건은 세 가지입니다.
+
+1. **GitHub 인증**: 비공개 저장소라 그 PC에서 `gh auth login`(소유 계정, 브라우저 인증)을 먼저 해 두어야 clone이 됩니다. 인증 없이 주소만 주면 "repository not found"로 실패합니다.
+2. **Windows 로컬 에이전트**: 앱 실행 방식이 Windows 전용이라 클라우드(리눅스 컨테이너) 에이전트는 코드를 읽고 `cargo test` 정도만 할 수 있고 앱을 띄우지는 못합니다. VS Build Tools 설치는 관리자 권한을 묻고, 첫 빌드는 5~10분·디스크 8 GB가 필요합니다.
+3. **CLI 로그인은 사람이**: 앱은 토큰을 갖지 않으므로 `claude auth login`, `codex login`, `agy` 첫 실행 같은 브라우저 로그인은 직접 해야 합니다. 에이전트는 그 단계에서 멈추고 알려 주도록 지시합니다.
+
+지시문 예시:
+
+```text
+https://github.com/bin7335/agent-dock 는 내 비공개 저장소야. gh auth login이 되어 있는지 확인하고
+gh repo clone bin7335/agent-dock 으로 받은 뒤 README.md 4장 "빠른 시작" 순서대로
+개발 도구(Node 22, Rust stable-msvc, VS Build Tools C++ 워크로드)를 설치하고
+npm install → npm run tauri dev 로 실행해줘. 디스크가 부족하면 CARGO_HOME/RUSTUP_HOME을
+다른 드라이브로 잡아. CLI 로그인(claude auth login, codex login, agy)은 내가 직접 할 테니
+그 단계에서는 멈추고 알려줘.
+```
+
 ## 5. 아키텍처
 
 ### 5-1. 기술 스택
