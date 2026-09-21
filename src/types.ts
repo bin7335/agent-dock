@@ -1,6 +1,43 @@
 // Rust 쪽 models.rs · availability.rs · adapters/mod.rs와 1:1로 대응하는 프론트 타입.
 // Tauri 이벤트/커맨드의 serde 직렬화 형태(snake_case)를 그대로 따른다.
 
+export interface OcxUsage {
+  summary: {
+    estimatedCostUsd: number | null;
+    totalTokens: number;
+    requests: number;
+    unpricedRequests: number;
+    unmeteredRequests: number;
+  };
+  historyTruncated: boolean;
+  range: string;
+}
+
+export interface ResourceSnapshot {
+  cpuPercent: number | null;
+  memoryUsed: number;
+  memoryTotal: number;
+  ocxMemory: number | null;
+  ocxPrivate: number | null;
+  ocxCpuPercent: number | null;
+}
+
+export interface OcxHealth { pid: number; version: string; url: string }
+export interface QuotaWindow { label: string; percent?: number; resetAt?: number; valueLabel?: string; segments?: QuotaWindow[] }
+export interface QuotaReport {
+  provider: string;
+  label: string;
+  updatedAt: number;
+  aggregation?: unknown;
+  quota: {
+    fiveHourPercent?: number; fiveHourResetAt?: number;
+    weeklyPercent?: number; weeklyResetAt?: number;
+    monthlyPercent?: number; monthlyResetAt?: number;
+    customWindows?: QuotaWindow[];
+  };
+}
+export interface QuotaResponse { reports: QuotaReport[]; providers: string[]; generatedAt: number }
+
 export type CliId = "codex" | "claude" | "gemini" | "opencode" | "antigravity";
 
 export type AvailabilityState =

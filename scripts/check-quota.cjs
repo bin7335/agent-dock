@@ -1,0 +1,26 @@
+// Exercise the actual UI quota helpers without a browser or a new test dependency.
+const ts = require('typescript');
+const fs = require('node:fs');
+const vm = require('node:vm');
+const assert = require('node:assert/strict');
+const source = fs.readFileSync('src/DockPanels.tsx', 'utf8');
+const parsed = ts.createSourceFile('DockPanels.tsx', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+const names = ['quotaWindows', 'remaining', 'resetEpoch'];
+const code = parsed.statements.filter(n => ts.isFunctionDeclaration(n) && names.includes(n.name?.text)).map(n => n.getText(parsed)).join('\n');
+const context = { exports: {} };
+vm.runInNewContext(ts.transpileModule(code, { compilerOptions: { module: ts.ModuleKind.CommonJS } }).outputText, context);
+const { remaining, quotaWindows } = context.exports;
+assert.equal(remaining({ percent: 8 }), 92);
+assert.equal(remaining({ percent: 100 }), 0);
+assert.equal(remaining({ percent: 0 }), 100);
+assert.equal(remaining({}), null);
+assert.equal(remaining({ percent: NaN }), null);
+assert.equal(remaining({ percent: 30, valueLabel: '$5 credit' }), null);
+assert.equal(remaining({ percent: 80, resetAt: 2_000_000_000 }, 2_000_000_000_001), null);
+assert.equal(remaining({ percent: 80, resetAt: 2_000_000_000 }, 1_999_999_999_000), 20);
+assert.equal(remaining({ percent: 80, resetAt: 2_000_000_000_000 }, 2_000_000_000_001), null);
+const rows = quotaWindows({ quota: { fiveHourPercent: 0, weeklyPercent: 100, customWindows: [{ label: 'Models', segments: [{ label: 'A', percent: 20 }] }] } });
+assert.equal(rows.length, 3);
+assert.equal(rows[2].label, 'Models · A');
+assert.equal(remaining(rows[2]), 80);
+console.log('PASS quota: used→remaining, zero/full, unknown, expired seconds/ms, credits, model windows');

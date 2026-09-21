@@ -5,6 +5,7 @@ mod availability;
 mod db;
 mod models;
 mod runner;
+mod resources;
 mod scheduler;
 
 use std::collections::HashMap;
@@ -740,6 +741,246 @@ async fn login_cli(
     Ok(message)
 }
 
+fn read_admin_token() -> Result<String, String> {
+    if let Ok(token) = std::env::var("OPENCODEX_ADMIN_AUTH_TOKEN") {
+        if !token.trim().is_empty() && !token.contains(['\r', '\n']) { return Ok(token.trim().to_owned()); }
+    }
+    let path = ocx_home()?.join("admin-api-token");
+    let token = std::fs::read_to_string(path)
+        .map_err(|e| format!("Opencodex 토큰 파일을 읽을 수 없습니다: {e}"))?;
+    let token = token.trim().trim_start_matches('\u{feff}');
+    if token.is_empty() || token.contains(['\r', '\n']) {
+        return Err("Opencodex 토큰 파일이 비어 있거나 올바르지 않습니다".into());
+    }
+    Ok(token.to_owned())
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OcxUsageSummary {
+    estimated_cost_usd: Option<f64>,
+    total_tokens: u64,
+    requests: u64,
+    #[serde(default)]
+    unpriced_requests: u64,
+    #[serde(default)]
+    unmetered_requests: u64,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OcxUsage {
+    summary: OcxUsageSummary,
+    #[serde(default)]
+    history_truncated: bool,
+    #[serde(default)]
+    range: String,
+}
+
+fn parse_ocx_response(response: &str) -> Result<serde_json::Value, String> {
+    // curl appends the HTTP status after the body; whitespace in JSON is valid.
+    let (body, status) = response
+        .rsplit_once('\n')
+        .ok_or("Opencodex HTTP 상태 코드가 없습니다")?;
+    if status.trim() != "200" {
+        return Err(format!("Opencodex HTTP 오류: {}", status.trim()));
+    }
+    let value: serde_json::Value = serde_json::from_str(body.trim().trim_start_matches('\u{feff}'))
+        .map_err(|e| format!("Opencodex 응답 형식 오류: {e}"))?;
+    if let Some(error) = value.get("error").filter(|e| !e.is_null()) {
+        return Err(format!("Opencodex 데이터 조회 실패: {error}"));
+    }
+    Ok(value)
+}
+
+fn parse_ocx_usage(response: &str) -> Result<OcxUsage, String> {
+    serde_json::from_value(parse_ocx_response(response)?)
+        .map_err(|e| format!("Opencodex 사용량 응답 형식 오류: {e}"))
+}
+
+fn ocx_home() -> Result<std::path::PathBuf, String> {
+    if let Some(dir) = std::env::var_os("OPENCODEX_HOME").filter(|v| !v.is_empty()) { return Ok(dir.into()); }
+    Ok(std::path::PathBuf::from(std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")).ok_or("사용자 홈 경로를 찾을 수 없습니다")?).join(".opencodex"))
+}
+
+fn ocx_base_url() -> Result<String, String> {
+    let home = ocx_home()?;
+    let read = |name| std::fs::read_to_string(home.join(name)).ok().and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok());
+    let port = read("runtime-port.json").and_then(|v| v.get("port").and_then(|p| p.as_u64()))
+        .or_else(|| read("config.json").and_then(|v| v.get("port").and_then(|p| p.as_u64())))
+        .filter(|p| *p > 0 && *p <= 65535).unwrap_or(10100);
+    Ok(format!("http://127.0.0.1:{port}"))
+}
+
+async fn ocx_request(path: &str, authenticated: bool, timeout: &str) -> Result<String, String> {
+    use std::process::Stdio;
+    use tokio::io::AsyncWriteExt;
+
+    let token = if authenticated { read_admin_token()? } else { String::new() };
+    #[cfg(windows)]
+    let curl = std::path::PathBuf::from(
+        std::env::var_os("SystemRoot").ok_or("Windows 시스템 경로를 찾을 수 없습니다")?,
+    )
+    .join("System32\\curl.exe");
+    #[cfg(not(windows))]
+    let curl = std::path::PathBuf::from("curl");
+
+    let mut command = tokio::process::Command::new(curl);
+    // Do not flash a console window on every poll.
+    #[cfg(windows)]
+    command.creation_flags(0x08000000);
+    let mut child = command
+        .args([
+            "--disable",
+            "--silent",
+            "--show-error",
+            "--noproxy",
+            "*",
+            "--connect-timeout",
+            "3",
+            "--max-time",
+            timeout,
+            "--header",
+            "@-",
+            "--write-out",
+            "\n%{http_code}",
+        ])
+        .arg(format!("{}{path}", ocx_base_url()?))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|e| format!("Opencodex curl 실행 실패: {e}"))?;
+    // Keep the admin token in Rust and out of process command-line arguments.
+    let mut stdin = child.stdin.take().ok_or("curl 입력을 열 수 없습니다")?;
+    let header = if authenticated { format!("Authorization: Bearer {token}\n") } else { String::new() };
+    stdin
+        .write_all(header.as_bytes())
+        .await
+        .map_err(|e| format!("curl 인증 헤더 전달 실패: {e}"))?;
+    drop(stdin);
+    let output = child
+        .wait_with_output()
+        .await
+        .map_err(|e| format!("Opencodex curl 응답 수신 실패: {e}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "Opencodex 연결 실패 (curl {}): {}",
+            output.status,
+            if token.is_empty() { String::from_utf8_lossy(&output.stderr).trim().to_owned() }
+            else { String::from_utf8_lossy(&output.stderr).trim().replace(&token, "[redacted]") }
+        ));
+    }
+    let response =
+        String::from_utf8(output.stdout).map_err(|_| "Opencodex 응답이 UTF-8 형식이 아닙니다")?;
+    Ok(response)
+}
+
+#[tauri::command]
+async fn get_ocx_usage(range: Option<String>) -> Result<OcxUsage, String> {
+    let range = range.as_deref().unwrap_or("all");
+    if !["all", "7d", "30d"].contains(&range) { return Err("지원하지 않는 사용량 기간".into()); }
+    parse_ocx_usage(&ocx_request(&format!("/api/usage?range={range}"), true, "8").await?)
+}
+
+#[tauri::command]
+async fn get_ocx_health() -> Result<serde_json::Value, String> {
+    let health = parse_ocx_response(&ocx_request("/healthz", false, "3").await?)?;
+    if health.get("status").and_then(|v| v.as_str()) != Some("ok") { return Err("Opencodex 상태 확인 실패".into()); }
+    Ok(serde_json::json!({"pid": health["pid"], "version": health["version"], "url": ocx_base_url()?}))
+}
+
+#[tauri::command]
+async fn get_ocx_quotas() -> Result<serde_json::Value, String> {
+    // Cached server quotas; do not force refresh provider credentials on each widget poll.
+    let (quota, providers) = tokio::try_join!(
+        ocx_request("/api/provider-quotas", true, "30"),
+        ocx_request("/api/providers", true, "8"),
+    )?;
+    let quota = parse_ocx_response(&quota)?;
+    let providers = parse_ocx_response(&providers)?;
+    let names: Vec<_> = providers.as_array().ok_or("제공자 목록 형식 오류")?.iter()
+        .filter(|p| p.get("disabled").and_then(|v| v.as_bool()) != Some(true))
+        .filter_map(|p| p.get("name").and_then(|v| v.as_str())).collect();
+    if !quota["reports"].is_array() { return Err("한도 응답 형식 오류".into()); }
+    Ok(serde_json::json!({"reports": quota["reports"], "providers": names, "generatedAt": quota["generatedAt"]}))
+}
+
+#[cfg(test)]
+mod ocx_tests {
+    use super::*;
+
+    #[test]
+    fn usage_rejects_read_failure_even_with_success_status() {
+        assert!(parse_ocx_usage(r#"{"error":"read_failed","summary":{"totalTokens":0,"requests":0}}
+200"#).unwrap_err().contains("read_failed"));
+    }
+
+    #[test]
+    fn usage_preserves_incomplete_accounting_metadata() {
+        let usage = parse_ocx_usage(r#"{"range":"all","historyTruncated":true,"summary":{"totalTokens":42,"requests":3,"unpricedRequests":1,"unmeteredRequests":1}}
+200"#).unwrap();
+        assert!(usage.history_truncated);
+        assert_eq!(usage.range, "all");
+        assert_eq!(usage.summary.unpriced_requests, 1);
+        assert_eq!(usage.summary.unmetered_requests, 1);
+    }
+
+    #[test]
+    fn usage_accepts_whitespace_and_preserves_zero_counts() {
+        let usage = parse_ocx_usage(
+            "\u{feff} {\"summary\":{\"estimatedCostUsd\":0,\"totalTokens\":0,\"requests\":0}} \r\n\n200",
+        ).unwrap();
+        assert_eq!(usage.summary.total_tokens, 0);
+        assert_eq!(usage.summary.estimated_cost_usd, Some(0.0));
+        let serialized = serde_json::to_value(usage).unwrap();
+        assert_eq!(serialized["summary"]["totalTokens"], 0);
+        assert_eq!(serialized["summary"]["estimatedCostUsd"], 0.0);
+    }
+
+    #[test]
+    fn usage_reports_http_failures_before_parsing_body() {
+        for status in ["401", "403", "500"] {
+            let error = parse_ocx_usage(&format!("<html>failure</html>\n{status}")).unwrap_err();
+            assert!(error.contains(status));
+        }
+    }
+
+    #[test]
+    fn usage_rejects_empty_invalid_or_missing_summary() {
+        for body in [
+            "",
+            "not json",
+            "null",
+            "{}",
+            "{\"summary\":{}}",
+            "{\"summary\":{\"totalTokens\":\"10\",\"requests\":1}}",
+        ] {
+            assert!(parse_ocx_usage(&format!("{body}\n200")).is_err());
+        }
+    }
+
+    #[test]
+    fn usage_preserves_unknown_cost() {
+        let usage = parse_ocx_usage(
+            "{\"summary\":{\"estimatedCostUsd\":null,\"totalTokens\":42,\"requests\":1}}\n200",
+        )
+        .unwrap();
+        assert_eq!(usage.summary.estimated_cost_usd, None);
+        assert_eq!(usage.summary.total_tokens, 42);
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires the local Opencodex server and admin token; reads usage only"]
+    async fn live_ocx_usage() {
+        let usage = get_ocx_usage(None)
+            .await
+            .expect("live Opencodex usage request failed");
+        println!("{}", serde_json::to_string(&usage).unwrap());
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let profile = RoutingProfile::default();
@@ -800,7 +1041,11 @@ pub fn run() {
             list_models,
             login_cli,
             enable_afk_mode,
-            respond_permission
+            respond_permission,
+            get_ocx_usage,
+            get_ocx_health,
+            get_ocx_quotas,
+            resources::get_system_resources
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -12,9 +12,15 @@
   "app": {
     "windows": [
       {
-        "title": "Agent Dock",
-        "width": 1100,
-        "height": 760,
+        "title": "Agent Dock Widget",
+        "width": 380,
+        "height": 188,
+        "resizable": true,
+        "minWidth": 380,
+        "minHeight": 188,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
         "dragDropEnabled": false
       }
     ],

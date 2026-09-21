@@ -4,6 +4,9 @@ import { listen } from "@tauri-apps/api/event";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import "./App.css";
 import type { AvailabilitySnapshot, CliId, Evidence, ModelOption, RunEvent } from "./types";
+import { useTelemetry } from "./useTelemetry";
+import { QuotaFooter, ResourcePanel, UsagePanel } from "./DockPanels";
+import { openUrl } from "@tauri-apps/plugin-opener";
 
 const CLI_LABEL: Record<CliId, string> = {
   codex: "Codex",
@@ -311,7 +314,7 @@ function App() {
   const [rechecking, setRechecking] = useState(false);
   const [dragging, setDragging] = useState<CliId | null>(null);
   const [dragOver, setDragOver] = useState<CliId | null>(null);
-  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [tab, setTab] = useState<"overview" | "chat" | "settings">("overview");
   const [modelChoice, setModelChoice] = useState<Record<string, string>>(() => loadModelChoices());
   const [modelOptions, setModelOptions] = useState<Record<string, ModelOption[]>>({});
   const [modelLoading, setModelLoading] = useState<Record<string, boolean>>({});
@@ -322,7 +325,6 @@ function App() {
   const [projectDir, setProjectDir] = useState<string>(() => loadStored(STORAGE_DIR, ""));
   const [cli, setCli] = useState<CliId>(() => loadStored(STORAGE_CLI, "claude") as CliId);
   const [allowWrites, setAllowWrites] = useState(false);
-  const [autoSwitch, setAutoSwitch] = useState(true);
   const [input, setInput] = useState("");
   const [error, setError] = useState("");
   const runMapRef = useRef<Record<number, number>>({});
@@ -669,9 +671,79 @@ function App() {
     );
   }
 
+  const [isExpanded, setIsExpanded] = useState(false);
+  const [quotaActive, setQuotaActive] = useState<string | null>(null);
+  const [usageRange, setUsageRange] = useState("all");
+  const [refresh, setRefresh] = useState(0);
+  const telemetry = useTelemetry(usageRange, refresh);
+  const online = !!telemetry.health.data && !telemetry.health.error;
+  const windowSizes = useRef({ compact: { width: 380, height: 188 }, expanded: { width: 520, height: 740 } });
+  const previousWindowMode = useRef("compact");
+  const windowMode = isExpanded ? "expanded" : quotaActive ? "quota" : "compact";
+
+  useEffect(() => {
+    const previous = previousWindowMode.current;
+    if (previous === windowMode) return;
+    if (previous === "compact" || previous === "expanded") {
+      windowSizes.current[previous] = { width: window.innerWidth, height: window.innerHeight };
+    }
+    previousWindowMode.current = windowMode;
+    const base = windowSizes.current[windowMode === "expanded" ? "expanded" : "compact"];
+    const size = { width: base.width, height: windowMode === "quota" ? Math.max(base.height, 440) : base.height };
+    let cancelled = false;
+    void (async () => {
+      const { getCurrentWindow, LogicalSize } = await import("@tauri-apps/api/window");
+      if (!cancelled) await getCurrentWindow().setSize(new LogicalSize(size.width, size.height));
+    })().catch(e => setError(`창 크기 변경 실패: ${String(e)}`));
+    return () => { cancelled = true; };
+  }, [windowMode]);
+
+  useEffect(() => {
+    const escape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      if (quotaActive) setQuotaActive(null); else setIsExpanded(false);
+    };
+    window.addEventListener("keydown", escape);
+    return () => window.removeEventListener("keydown", escape);
+  }, [quotaActive]);
+
+  const toggleWidget = () => { setQuotaActive(null); setIsExpanded(v => !v); };
+  const openDashboard = () => { void openUrl(telemetry.health.data?.url ?? "http://127.0.0.1:10100").catch(e => setError(String(e))); };
+  const closeWidget = async () => {
+    const { getCurrentWindow } = await import("@tauri-apps/api/window");
+    await getCurrentWindow().close();
+  };
+
+  const startDrag = async (e: React.MouseEvent) => {
+    if (e.button !== 0 || (e.target as HTMLElement).closest("button")) return;
+    e.preventDefault();
+    try {
+      const { getCurrentWindow } = await import("@tauri-apps/api/window");
+      await getCurrentWindow().startDragging();
+    } catch (err) {
+      setError(`창 이동 실패: ${String(err)}`);
+    }
+  };
+
   return (
-    <div className="app">
-      <header className="cli-row" title="카드를 드래그해 라우팅 우선순위를 바꿉니다">
+    <div className={`widget-container ${isExpanded ? "expanded" : "collapsed"} ${quotaActive ? "quota-open" : ""}`}>
+      <div className="widget-header" onMouseDown={startDrag}>
+        <span className="brand-mark" aria-hidden="true">a<span>·</span></span>
+        <span className="widget-title">Agent Dock</span>
+        <span className={`connection-badge ${online ? "online" : "offline"}`} title={telemetry.health.error ?? `Opencodex ${telemetry.health.data?.version ?? "연결 중"}`}><i />{online ? "LIVE" : telemetry.health.error ? "OFFLINE" : "연결 중"}</span>
+        <div className="window-actions">
+          <button className="icon-button" aria-label="Opencodex 대시보드 열기" title="Opencodex 대시보드" onClick={openDashboard}>↗</button>
+          <button className="icon-button toggle-btn" onClick={toggleWidget} aria-label={isExpanded ? "위젯 접기" : "위젯 펼치기"} aria-expanded={isExpanded}>{isExpanded ? "⌃" : "⌄"}</button>
+          <button className="icon-button close-button" aria-label="위젯 닫기" title="진행 중인 대화를 중지한 뒤 닫을 수 있습니다" disabled={convs.some(c => c.state === "running")} onClick={() => void closeWidget().catch(e => setError(String(e)))}>×</button>
+        </div>
+      </div>
+      {!isExpanded && <div className="compact-body"><UsagePanel telemetry={telemetry} compact range={usageRange} onRange={setUsageRange} /><ResourcePanel telemetry={telemetry} compact /></div>}
+      {isExpanded && (
+        <>
+        <nav className="dock-tabs" aria-label="위젯 메뉴">{([['overview', '개요'], ['chat', '대화'], ['settings', '설정']] as const).map(([key, label]) => <button key={key} className={tab === key ? 'active' : ''} aria-current={tab === key ? 'page' : undefined} onClick={() => { setTab(key); setQuotaActive(null); }}>{label}{key === 'chat' && pendingTotal > 0 && <span className="count-badge">{pendingTotal}</span>}</button>)}<button className="refresh-button" onClick={() => setRefresh(v => v + 1)} title="연결·사용량·한도 새로고침" aria-label="새로고침">↻</button></nav>
+        <div className={`app tab-${tab}`}>
+          {tab === "overview" && <><ResourcePanel telemetry={telemetry} compact={false} /><UsagePanel telemetry={telemetry} compact={false} range={usageRange} onRange={setUsageRange} /><div className="section-heading"><h2>CLI 상태</h2><span className="subtle">드래그로 우선순위 변경</span></div></>}
+          <header className="cli-row" title="카드를 드래그해 우선순위를 바꿉니다">
         {cliOrder.map((id) => {
           const s = statuses.find((x) => x.cli === id);
           const state = s?.state ?? "unknown";
@@ -682,6 +754,10 @@ function App() {
               className={`cli-card state-${state}${id === cli ? " current" : ""}${dragging === id ? " dragging" : ""}${dragOver === id && dragging !== id ? " drag-over" : ""}`}
               title={`${rank}순위${s?.version ? ` · 버전 ${s.version}` : ""} · 드래그해서 순서 변경`}
               draggable
+              role="button"
+              tabIndex={0}
+              onClick={() => setDetailCli(v => v === id ? null : id)}
+              onKeyDown={e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setDetailCli(v => v === id ? null : id); } }}
               onDragStart={(e) => {
                 e.dataTransfer.effectAllowed = "move";
                 e.dataTransfer.setData("text/plain", id);
@@ -710,7 +786,7 @@ function App() {
             </div>
           );
         })}
-        <button className="small settings-btn" onClick={() => setSettingsOpen(true)} title="CLI 레지스트리: 사용 여부·로그인·모델">
+        <button className="small settings-btn" onClick={() => setTab("settings")} title="CLI 레지스트리: 사용 여부·로그인·모델">
           ⚙ CLI 설정
         </button>
         {pendingTotal > 0 && <span className="perm-badge">승인 대기 {pendingTotal}</span>}
@@ -781,7 +857,7 @@ function App() {
               value={input}
               onChange={(e) => setInput(e.currentTarget.value)}
               onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.shiftKey) {
+                if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
                   e.preventDefault();
                   void send();
                 }
@@ -821,7 +897,7 @@ function App() {
           </select>
           {renderModelSelect(cli, true)}
           <label className="check">
-            <input type="checkbox" checked={allowWrites} onChange={(e) => setAllowWrites(e.currentTarget.checked)} />
+            <input type="checkbox" checked={current?.allowWrites ?? allowWrites} disabled={!!current} onChange={(e) => setAllowWrites(e.currentTarget.checked)} />
             파일 쓰기 허용
           </label>
           <span className="routing" title="라우팅 프로필 '코딩 작업' 기준, 지금 가용한 최우선 CLI">
@@ -832,52 +908,9 @@ function App() {
           <button onClick={() => void stop()} disabled={!running}>
             중지
           </button>
-          <button className={autoSwitch ? "toggle on" : "toggle"} onClick={() => setAutoSwitch((v) => !v)}>
-            자동 전환: {autoSwitch ? "켬" : "끔"}
-          </button>
         </div>
       </div>
 
-      <div style={{padding: "8px", background: "rgba(0,0,0,0.4)", borderRadius: "8px", marginBottom: "10px", display: "flex", gap: "10px", alignItems: "center"}}>
-        <button className="primary" style={{backgroundColor: "#b35b14", border: "none", padding: "6px 12px", borderRadius: "4px", color: "white", fontWeight: "bold", cursor: "pointer"}} onClick={async () => {
-          try {
-            await invoke("enable_afk_mode", { duration: 3600 });
-            alert("✅ AFK(무인 공장) 모드가 활성화되었습니다. 모든 에이전트가 Firstmate의 지휘를 받습니다.");
-          } catch (e) {
-            alert("AFK 모드 설정 실패: " + e);
-          }
-        }}>💤 /afk (자리비움)</button>
-        <button style={{backgroundColor: "#2a3a5c", border: "none", padding: "6px 12px", borderRadius: "4px", color: "white", cursor: "pointer"}} onClick={async () => {
-          try {
-            alert("1. 모듈 로딩 시작");
-            const oauth = await import("oauth-collect");
-            const ctrl = {
-              onAuth: async (info: any) => {
-                alert(`3. 브라우저 열기 시도 중... URL:\n${info.url}`);
-                try {
-                  const opener = await import("@tauri-apps/plugin-opener");
-                  await opener.open(info.url);
-                  alert("4. 브라우저 열기 성공!");
-                } catch(e: any) {
-                  alert("4. 브라우저 열기 에러: " + e?.message);
-                }
-              },
-              onProgress: (msg: string) => {
-                console.log("[OAuth]", msg);
-              },
-              onAuthorizationResponse: async (state: string) => {
-                const res = window.prompt("5. 로그인이 끝나면 빈 화면이 나올 수 있습니다.\n해당 브라우저의 전체 주소(URL)를 복사해서 여기에 붙여넣어주세요:");
-                return res || "";
-              }
-            };
-            alert("2. Anthropic(Claude) 토큰 획득 엔진 가동!");
-            const creds = await oauth.OAUTH_PROVIDERS["anthropic"].login(ctrl);
-            alert(`6. ✅ Anthropic 토큰 획득 성공!\nAccess Token: ${creds.access.substring(0, 20)}...`);
-          } catch (e: any) {
-            alert("❌ OAuth 로그인 중단/실패: " + e?.message);
-          }
-        }}>🔑 AI 일괄 로그인 (oauth)</button>
-      </div>
 
       <footer className="statusbar">
         {detail && (
@@ -956,46 +989,30 @@ function App() {
         })}
       </footer>
 
-      {settingsOpen && (
-        <div className="modal-backdrop" onClick={() => setSettingsOpen(false)}>
-          <div className="modal" onClick={(e) => e.stopPropagation()}>
+      {tab === "settings" && (
+        <section className="registry-panel">
             <div className="panel-head">
-              <h2>CLI 레지스트리</h2>
+              <h2>연결 및 설정</h2>
               <div className="actions">
                 <button className="small" onClick={() => void recheck(null)} disabled={rechecking}>
                   {rechecking ? "재검사 중…" : "전체 재검사"}
                 </button>
-                <button className="small" onClick={() => setSettingsOpen(false)}>
-                  닫기
-                </button>
               </div>
             </div>
-            <p className="muted">
-              사용을 끄면 상단·상태바·라우팅에서 빠집니다. 로그인은 각 CLI의 자체 로그인 흐름(브라우저 또는 콘솔 창)을 그대로 띄우며, 앱은 토큰을
-              저장하지 않습니다. 모델은 CLI가 제공하는 목록에서 고르고 비우면 CLI 기본값을 씁니다.
-            </p>
-            <table className="registry">
-              <thead>
-                <tr>
-                  <th>사용</th>
-                  <th>순위</th>
-                  <th>CLI</th>
-                  <th>상태</th>
-                  <th>계정</th>
-                  <th>로그인</th>
-                  <th>모델</th>
-                </tr>
-              </thead>
-              <tbody>
+            <div className="connection-card"><div><strong>Opencodex</strong><p className="muted">{telemetry.health.data?.url ?? "로컬 서버 연결 대기"}</p><small>{telemetry.health.data?.version ? `v${telemetry.health.data.version}` : "서버를 시작하면 자동 연결됩니다"}</small></div><button onClick={openDashboard}>계정 관리 ↗</button></div>
+            <p className="muted settings-help">AI 제공자·계정은 Opencodex에서 관리합니다. 아래 로그인은 각 CLI의 자체 로그인입니다.</p>
+            <div className="registry-cards">
                 {allOrder.map((id, i) => {
                   const s = statuses.find((x) => x.cli === id);
                   const enabled = s?.enabled ?? true;
                   const state = s?.state ?? "unknown";
                   return (
-                    <tr key={id} className={enabled ? "" : "disabled"}>
-                      <td>
+                    <article key={id} className={`registry-card ${enabled ? "" : "disabled"}`}>
+                      <div className="registry-card-head"><span className="prio">{i + 1}</span><strong>{CLI_LABEL[id]}</strong><span className={`sb-state state-${state}`}><span className="dot" />{STATE_LABEL[state]}</span><label className="enable-switch">
+                        <span>사용</span>
                         <input
                           type="checkbox"
+                          aria-label={`${CLI_LABEL[id]} 사용`}
                           checked={enabled}
                           onChange={(e) => {
                             const next = e.currentTarget.checked
@@ -1009,40 +1026,33 @@ function App() {
                             void applyEnabled(ordered);
                           }}
                         />
-                      </td>
-                      <td className="num">{i + 1}</td>
-                      <td>
-                        <strong>{CLI_LABEL[id]}</strong>
-                      </td>
-                      <td>
-                        <span className={`sb-state state-${state}`}>
-                          <span className="dot" /> {STATE_LABEL[state]}
-                        </span>{" "}
-                        {s && <span className={`evidence evidence-${s.evidence}`}>{EVIDENCE_BADGE[s.evidence]}</span>}
-                        {s?.last_error && <div className="error small-text">{s.last_error}</div>}
-                      </td>
-                      <td className="small-text">
-                        {s ? accountLine(s) : "?"}
-                        {s?.version && <div className="muted">버전 {s.version}</div>}
-                      </td>
-                      <td>
+                      </label></div>
+                      <p className="registry-account">{s ? accountLine(s) : "확인 중"}</p>
+                      <div className="registry-controls">
                         <button className="small" onClick={() => void login(id)} disabled={loginBusy !== null || !enabled}>
                           {loginBusy === id ? "진행 중…" : "로그인"}
                         </button>
-                        {loginMsg[id] && <div className="muted small-text">{loginMsg[id]}</div>}
-                      </td>
-                      <td>{enabled ? renderModelSelect(id, false) : <span className="muted">—</span>}</td>
-                    </tr>
+                        {enabled && renderModelSelect(id, false)}
+                      </div>
+                      {s?.last_error && <p className="inline-error">{s.last_error}</p>}
+                      {loginMsg[id] && <p className="muted small-text">{loginMsg[id]}</p>}
+                    </article>
                   );
                 })}
-              </tbody>
-            </table>
-            <p className="muted">
-              순서는 상단 카드를 드래그해 바꿉니다. OpenCode는 자체 제공자(API 키)로만 연결하며 Claude 구독 OAuth는 약관상 연결하지 않습니다.
-            </p>
-          </div>
-        </div>
+            </div>
+            <p className="settings-help muted">CLI 전환은 대화 탭에서 직접 선택합니다. 자동 전환·AFK는 아직 지원하지 않습니다.</p>
+        </section>
       )}
+        </div>
+        </>
+      )}
+      {error && (!isExpanded || tab !== "chat") && <div className="dock-error" role="alert" title={error}>{error}<button className="icon-button" aria-label="오류 닫기" onClick={() => setError("")}>×</button></div>}
+      <QuotaFooter telemetry={telemetry} active={quotaActive} onActive={setQuotaActive} compact={!isExpanded} />
+      <div className="resize-grip" title="드래그해서 창 크기 조절" onMouseDown={e => {
+        if (e.button !== 0) return;
+        e.preventDefault();
+        void import("@tauri-apps/api/window").then(({ getCurrentWindow }) => getCurrentWindow().startResizeDragging("SouthEast")).catch(e => setError(`창 크기 조절 실패: ${String(e)}`));
+      }} />
     </div>
   );
 }
