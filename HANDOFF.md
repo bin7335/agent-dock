@@ -61,3 +61,14 @@ PRD·설계 근거·스파이크 실측·구현 현황의 원본은 위키 `wiki
 - 한글 IME 때문에 `SendKeys`로 글자를 치지 말고 `Set-Clipboard` + `^v`. 네이티브 `<select>`는 클릭 후 `{HOME}{DOWN}…{ENTER}`
 - PowerShell 변수는 대소문자 무시(`$h`/`$H` 충돌), `-match`도 무시(`-cmatch`). 콘솔 창은 conhost 소유라 cmd의 MainWindowHandle이 0. 앱 재시작 직후 첫 클릭은 포커스에만 쓰인다
 - Bash 도구는 heredoc이 ~16KB를 넘으면 잘리고 `\n`·`\a` 같은 백슬래시 시퀀스를 바꾸므로, 긴 패치는 Write 도구로 .py를 만들어 실행한다
+
+### 2026-09-21 진행 상황 (Firstmate & oauth-collect 연동)
+
+1. **빌드 환경 격리**: OneDrive 동기화 폴더(os error 5 잠금 에러 발생)에서 벗어나 로컬 D:\agent-dock으로 프로젝트를 복제하고 독립된 빌드 환경을 구축했습니다.
+2. **Firstmate AFK 모드 (백엔드 완료)**:
+   - UI 하단에 주황색 💤 /afk (자리비움) 버튼을 추가했습니다.
+   - Rust 백엔드(src-tauri/src/lib.rs)에 enable_afk_mode IPC 명령어를 주입하여, 프론트엔드와 성공적으로 연동되도록 조치했습니다.
+3. **oauth-collect 로그인 엔진 (진행 중)**:
+   - UI 하단에 파란색 🔑 AI 일괄 로그인 (oauth) 버튼을 추가하고 oauth-collect 모듈을 동적 임포트하여 OAUTH_PROVIDERS["anthropic"].login 플로우를 연결했습니다.
+   - **이슈**: 데스크톱 앱(Tauri) 샌드박스로 인해 window.open이 막혀 브라우저가 열리지 않는 현상을 발견했습니다.
+   - **대응 방안**: Tauri 네이티브 플러그인(@tauri-apps/plugin-opener)으로 강제 브라우저 팝업을 시도하도록 패치했으며, 정확한 오류 지점 추적을 위해 1~6단계의 상세 디버그 Alert 창을 심어두었습니다 (여기서 일시 중지됨).

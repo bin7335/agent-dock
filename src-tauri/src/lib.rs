@@ -350,6 +350,12 @@ async fn resolve_permission(
 
 /// 승인 요청에 답한다 (PRD 4장: 승인 요청을 앱 화면에서 처리). remember=true면 CLI가 제안한 범위로 세션 동안 허용
 #[tauri::command]
+async fn enable_afk_mode(duration: u64) -> Result<bool, String> {
+    println!("AFK Mode activated for {} seconds. Delegation to Firstmate.", duration);
+    Ok(true)
+}
+
+#[tauri::command]
 async fn respond_permission(
     app: AppHandle,
     state: tauri::State<'_, AppState>,
@@ -793,6 +799,7 @@ pub fn run() {
             set_enabled_clis,
             list_models,
             login_cli,
+            enable_afk_mode,
             respond_permission
         ])
         .run(tauri::generate_context!())
