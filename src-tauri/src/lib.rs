@@ -432,6 +432,47 @@ async fn start_job(
     spawn_run(app, state.inner(), cli, adapter, spec, follow_up).await
 }
 
+/// Firstmate uses the existing approval and streaming pipeline, with OCX routing pinned
+/// for this process only. User-wide Codex configuration is left untouched.
+#[tauri::command]
+async fn start_firstmate(
+    app: AppHandle,
+    state: tauri::State<'_, AppState>,
+    request: String,
+    project_dir: String,
+    allow_writes: bool,
+    model: String,
+    crew_model: String,
+) -> Result<u64, String> {
+    if request.trim().is_empty() || model.trim().is_empty() || crew_model.trim().is_empty() {
+        return Err("작업과 Firstmate·Crew 모델을 선택하세요".into());
+    }
+    let project = std::fs::canonicalize(&project_dir).map_err(|_| "프로젝트 폴더를 확인하세요")?;
+    if !project.is_dir() { return Err("프로젝트 경로가 폴더가 아닙니다".into()); }
+    get_ocx_health().await?;
+    let mode = parse_ocx_response(&ocx_request("/api/v2", true, "8").await?)?;
+    if mode["multiAgentMode"].as_str() != Some("v1") {
+        return Err("Opencodex 대시보드에서 협업 모드를 v1으로 설정한 뒤 다시 맡겨 주세요".into());
+    }
+    let prompt = format!(
+        "You are Firstmate, the user's supervising coding agent. The user is the captain.\n\
+         Break the task into concrete bounded assignments. Use the available native collaboration tools to delegate to crew where useful.\n\
+         Preferred crew model: {}. Respect the active tool schema and model availability; report if the requested model cannot be used.\n\
+         Monitor every spawned worker with the collaboration tools until it completes or is blocked. Review its results, resolve routine failures, and summarize evidence and outstanding decisions for the captain.\n\
+         Do not claim a worker was created unless a tool confirmed it. If collaboration tools are unavailable, report that limitation instead of claiming delegated work.\n\
+         For parallel file edits, create separate git worktrees with unique branches first; otherwise serialize edits. Never discard existing user changes. Preserve worktrees for review.\n\
+         Do not merge, push, publish or delete branches unless the user task explicitly authorizes it. File writes permitted: {allow_writes}.\n\
+         Wait for your crew and return a final report of assignments, outcomes, tests, remaining issues and worktree paths.\n\nUser task:\n{request}",
+        serde_json::to_string(&crew_model).map_err(|e| e.to_string())?
+    );
+    let adapter = adapter_for(CliId::Codex)?;
+    let job = make_job(prompt, project.to_string_lossy().into_owned(), allow_writes, Some(model));
+    let mut spec = adapter.build_command(&job);
+    spec.args.extend(["-c".into(), format!("openai_base_url=\"{}/v1\"", ocx_base_url()?)]);
+    let follow_up = adapter.stdin_follow_up(&job, None);
+    spawn_run(app, state.inner(), CliId::Codex, adapter, spec, follow_up).await
+}
+
 /// 기존 세션을 이어 후속 메시지를 보낸다. 반환값은 run_id.
 #[tauri::command]
 async fn continue_job(
@@ -1041,6 +1082,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             start_job,
+            start_firstmate,
             continue_job,
             cancel_run,
             get_availability,

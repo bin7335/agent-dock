@@ -317,6 +317,7 @@ function App() {
   const [dragging, setDragging] = useState<CliId | null>(null);
   const [dragOver, setDragOver] = useState<CliId | null>(null);
   const [tab, setTab] = useState<"overview" | "chat" | "crew" | "settings">("overview");
+  const [crewBusy, setCrewBusy] = useState(false);
   const [modelChoice, setModelChoice] = useState<Record<string, string>>(() => loadModelChoices());
   const [modelOptions, setModelOptions] = useState<Record<string, ModelOption[]>>({});
   const [modelLoading, setModelLoading] = useState<Record<string, boolean>>({});
@@ -701,6 +702,7 @@ function App() {
   const toggleWidget = () => { setQuotaActive(null); setIsExpanded(v => !v); };
   const openDashboard = () => { void openUrl(telemetry.health.data?.url ?? "http://127.0.0.1:10100").catch(e => setError(String(e))); };
   const closeWidget = async () => {
+    if (crewBusy) throw new Error("Firstmate 작업을 중지한 뒤 닫으세요");
     const { getCurrentWindow } = await import("@tauri-apps/api/window");
     await getCurrentWindow().close();
   };
@@ -733,11 +735,11 @@ function App() {
         </div>
       </div>
       {!isExpanded && <div className="compact-body"><UsagePanel telemetry={telemetry} compact range={usageRange} onRange={setUsageRange} /><ResourcePanel telemetry={telemetry} compact /></div>}
+      <div className="firstmate-view" hidden={!isExpanded || tab !== "crew"}><CrewPanel projectDir={projectDir} onBusy={setCrewBusy} /></div>
       {isExpanded && (
         <>
         <nav className="dock-tabs" aria-label="위젯 메뉴">{([['overview', '개요'], ['chat', '대화'], ['settings', '설정']] as const).map(([key, label]) => <button key={key} className={tab === key ? 'active' : ''} aria-current={tab === key ? 'page' : undefined} onClick={() => { setTab(key); setQuotaActive(null); }}>{label}{key === 'chat' && pendingTotal > 0 && <span className="count-badge">{pendingTotal}</span>}</button>)}<button className={tab === "crew" ? "active" : ""} onClick={() => { setTab("crew"); setQuotaActive(null); }}>Crew</button><button className="refresh-button" onClick={() => setRefresh(v => v + 1)} title="연결·사용량·한도 새로고침" aria-label="새로고침">↻</button></nav>
         <div className={`app tab-${tab}`}>
-          {tab === "crew" && <CrewPanel projectDir={projectDir} />}
           {tab === "overview" && <><ResourcePanel telemetry={telemetry} compact={false} /><UsagePanel telemetry={telemetry} compact={false} range={usageRange} onRange={setUsageRange} /><div className="section-heading"><h2>AI 우선순위</h2><span className="subtle">드래그로 선호 순서 변경</span></div></>}
           <header className="cli-row" title="카드를 드래그해 선호 AI 순서를 바꿉니다">
         {cliOrder.map((id) => {

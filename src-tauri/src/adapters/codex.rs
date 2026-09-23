@@ -267,6 +267,10 @@ impl CliAdapter for CodexAdapter {
                         tool: "command".into(),
                         detail: text(&item, "command"),
                     }],
+                    Some("collabAgentToolCall") => vec![AgentEvent::ToolUse {
+                        tool: format!("crew/{}", text(&item, "tool")),
+                        detail: item.to_string(),
+                    }],
                     _ => vec![],
                 }
             }

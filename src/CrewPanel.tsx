@@ -1,62 +1,99 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import type { AgentEvent, RunEvent } from "./types";
+import type { RunEvent } from "./types";
+import { reduceCrewEvent, type CrewTask } from "./crewState";
 
-type CrewStatus = "queued" | "running" | "approval" | "done" | "failed";
-interface CrewTask { id: number; title: string; worker: string; status: CrewStatus; worktree: string; model: string; runId?: number; detail?: string; }
-const STATUS_LABEL: Record<CrewStatus, string> = { queued: "대기", running: "작업 중", approval: "승인 필요", done: "완료", failed: "실패" };
-interface OcxModel { id: string; namespaced?: string; label?: string; display_name?: string; disabled?: boolean; provider?: string; }
-const readSetting = (key: string, fallback: string) => { try { return localStorage.getItem(key) ?? fallback; } catch { return fallback; } };
-const saveSetting = (key: string, value: string) => { try { localStorage.setItem(key, value); } catch { /* unavailable */ } };
+interface OcxModel { id: string; namespaced?: string; label?: string; display_name?: string; disabled?: boolean; }
+const read = (key: string) => { try { return localStorage.getItem(key) ?? ""; } catch { return ""; } };
+const save = (key: string, value: string) => { try { localStorage.setItem(key, value); } catch { /* storage unavailable */ } };
+const labels = { running: "감시 중", starting: "시작 중", approval: "승인 필요", done: "완료", failed: "실패", cancelled: "중지됨" };
 
-export function CrewPanel({ projectDir }: { projectDir: string }) {
-  const [draft, setDraft] = useState(""); const [tasks, setTasks] = useState<CrewTask[]>([]);
-  const [models, setModels] = useState<OcxModel[]>([]); const [modelError, setModelError] = useState("");
-  const [captainModel, setCaptainModel] = useState(() => readSetting("agentdock.captainModel", ""));
-  const [crewModel, setCrewModel] = useState(() => readSetting("agentdock.crewModel", "")); const [taskModel, setTaskModel] = useState("");
-  const modelLabel = (id: string) => models.find((model) => (model.namespaced ?? model.id) === id)?.display_name ?? models.find((model) => (model.namespaced ?? model.id) === id)?.label ?? id;
+export function CrewPanel({ projectDir, onBusy }: { projectDir: string; onBusy: (busy: boolean) => void }) {
+  const [draft, setDraft] = useState("");
+  const [tasks, setTasks] = useState<CrewTask[]>([]);
+  const [models, setModels] = useState<OcxModel[]>([]);
+  const [error, setError] = useState("");
+  const [ready, setReady] = useState(false);
+  const [firstmate, setFirstmate] = useState(() => read("agentdock.captainModel"));
+  const [crew, setCrew] = useState(() => read("agentdock.crewModel"));
+  const [allowWrites, setAllowWrites] = useState(false);
+  const starting = useRef(false);
+  const pending = useRef<RunEvent[]>([]);
+  const owned = useRef(new Map<number, number>());
+  const busy = tasks.some(t => ["starting", "running", "approval"].includes(t.status));
+  useEffect(() => { onBusy(busy); }, [busy, onBusy]);
   useEffect(() => {
-    invoke<OcxModel[]>("get_ocx_models").then((rows) => {
-      const available = rows.filter((model) => !model.disabled && (model.namespaced || model.id));
-      setModels(available);
-      if (available.length) {
-        const first = available[0].namespaced ?? available[0].id;
-        setCaptainModel((current) => current || first); setCrewModel((current) => current || first);
+    let disposed = false;
+    const off = listen<RunEvent>("agent-event", ({ payload }) => {
+      const id = owned.current.get(payload.run_id);
+      if (id === undefined) {
+        if (starting.current) pending.current.push(payload);
+        return;
       }
-    }).catch((error) => setModelError(String(error)));
-  }, []);
-  useEffect(() => {
-    const unlisten = listen<RunEvent>("agent-event", ({ payload }) => {
-      setTasks((current) => current.map((task) => {
-        if (task.runId !== payload.run_id) return task;
-        const event: AgentEvent = payload.event;
-        if (event.kind === "permission_request") return { ...task, status: "approval", detail: event.description };
-        if (event.kind === "completed") return { ...task, status: event.ok ? "done" : "failed", detail: event.summary };
-        if (event.kind === "process_exited") return event.cancelled || event.code === 0 ? task : { ...task, status: "failed", detail: `worker 종료 코드 ${event.code ?? "?"}` };
-        return task.status === "queued" ? { ...task, status: "running" } : task;
-      }));
+      setTasks(rows => rows.map(t => t.id === id ? reduceCrewEvent(t, payload.event) : t));
+      if (payload.event.kind === "process_exited") owned.current.delete(payload.run_id);
     });
-    return () => { void unlisten.then((off) => off()); };
+    off.then(() => { if (!disposed) setReady(true); }).catch(e => { if (!disposed) setError(String(e)); });
+    invoke<OcxModel[]>("get_ocx_models").then(rows => {
+      if (disposed) return;
+      const available = rows.filter(m => !m.disabled && (m.namespaced || m.id));
+      setModels(available);
+      const valid = (id: string) => available.some(m => (m.namespaced ?? m.id) === id);
+      const fallback = available[0]?.namespaced ?? available[0]?.id ?? "";
+      setFirstmate(current => valid(current) ? current : fallback);
+      setCrew(current => valid(current) ? current : fallback);
+    }).catch(e => { if (!disposed) setError(String(e)); });
+    return () => { disposed = true; void off.then(unlisten => unlisten()).catch(() => {}); };
   }, []);
-  const modelOptions = models.map((model) => ({ id: model.namespaced ?? model.id, label: model.display_name ?? model.label ?? model.namespaced ?? model.id }));
-  const addTask = () => { const title = draft.trim(); if (!title) return; const id = Date.now(); setTasks((current) => [...current, { id, title, worker: "대기 중", status: "queued", worktree: projectDir || ".", model: taskModel || crewModel }]); setDraft(""); };
-  const startTask = async (id: number) => {
-    const task = tasks.find((item) => item.id === id);
-    if (!task) return;
-    setTasks((current) => current.map((item) => item.id === id ? { ...item, worker: "Codex worker", status: "running", detail: undefined } : item));
+  async function start() {
+    if (starting.current || busy || !ready || !draft.trim() || !projectDir || !firstmate || !crew) return;
+    starting.current = true;
+    pending.current = [];
+    const task: CrewTask = { id: Date.now(), title: draft.trim(), projectDir, model: firstmate, crewModel: crew, status: "starting", output: "", activity: [], permissions: [] };
+    setTasks(rows => [...rows, task]);
+    setError("");
     try {
-      const runId = await invoke<number>("start_job", { cli: "codex", request: task.title, projectDir: projectDir || ".", allowWrites: true, model: task.model || null });
-      setTasks((current) => current.map((item) => item.id === id ? { ...item, runId } : item));
-    } catch (error) {
-      setTasks((current) => current.map((item) => item.id === id ? { ...item, status: "failed", detail: String(error) } : item));
-    }
-  };
-  return <section className="crew-panel" aria-label="Crew 작업">
-    <div className="crew-intro"><div><span className="eyebrow">CAPTAIN / CREW</span><h2>작업을 나눠 맡깁니다</h2><p>Captain이 정한 일을 Codex worker에게 보내고 실행 이벤트를 감시합니다.</p></div><span className="crew-count">{tasks.length}개 작업</span></div>
-    <div className="crew-compose"><input value={draft} onChange={(e) => setDraft(e.currentTarget.value)} onKeyDown={(e) => { if (e.key === "Enter") addTask(); }} placeholder="예: 로그인 실패 케이스를 조사해줘" aria-label="새 Crew 작업" /><button onClick={addTask} disabled={!draft.trim()}>작업 추가</button></div>
-    <div className="crew-models"><label><span>Captain 모델</span><select value={captainModel} onChange={(e) => { setCaptainModel(e.currentTarget.value); saveSetting("agentdock.captainModel", e.currentTarget.value); }} disabled={!modelOptions.length}><option value="">{modelError ? "Opencodex 연결 실패" : "모델 목록 불러오는 중"}</option>{modelOptions.map((model) => <option key={model.id} value={model.id}>{model.label}</option>)}</select></label><label><span>Crew 기본 모델</span><select value={crewModel} onChange={(e) => { setCrewModel(e.currentTarget.value); saveSetting("agentdock.crewModel", e.currentTarget.value); }} disabled={!modelOptions.length}><option value="">{modelError ? "Opencodex 연결 실패" : "모델 목록 불러오는 중"}</option>{modelOptions.map((model) => <option key={model.id} value={model.id}>{model.label}</option>)}</select></label><label><span>이번 작업 override</span><select value={taskModel} onChange={(e) => setTaskModel(e.currentTarget.value)} disabled={!modelOptions.length}><option value="">Crew 기본값 ({crewModel ? modelLabel(crewModel) : "미지정"})</option>{modelOptions.map((model) => <option key={model.id} value={model.id}>{model.label}</option>)}</select></label></div>
-    {modelError && <p className="crew-model-error">Opencodex 모델 목록을 불러오지 못했습니다: {modelError}</p>}
-    {tasks.length === 0 ? <div className="crew-empty"><span className="crew-empty-mark">+</span><strong>아직 Crew 작업이 없습니다</strong><p>작업을 추가하면 worker 실행과 상태 감시가 시작됩니다.</p></div> : <div className="crew-list">{tasks.map((task) => <article className="crew-task" key={task.id}><div className="crew-task-top"><span className={`crew-status crew-status-${task.status}`}><i />{STATUS_LABEL[task.status]}</span><span className="crew-worker">{task.worker}</span></div><h3>{task.title}</h3><div className="crew-task-meta"><span>⌘ {task.worktree}</span><span>{projectDir || "프로젝트 폴더 미선택"}</span></div><div className="crew-task-model">모델 · {modelLabel(task.model || crewModel)}</div>{task.detail && <p className="crew-hint">{task.detail}</p>}{task.status === "queued" && <button className="small crew-start" onClick={() => void startTask(task.id)}>worker 시작</button>}{task.status === "running" && <span className="crew-hint">작업 이벤트를 감시하는 중</span>}</article>)}</div>}
+      const runId = await invoke<number>("start_firstmate", { request: task.title, projectDir: task.projectDir, model: task.model, crewModel: task.crewModel, allowWrites });
+      owned.current.set(runId, task.id);
+      const buffered = pending.current.filter(e => e.run_id === runId);
+      setTasks(rows => rows.map(t => t.id === task.id ? buffered.reduce((value, e) => reduceCrewEvent(value, e.event), { ...t, runId, status: "running" } as CrewTask) : t));
+      if (buffered.some(e => e.event.kind === "process_exited")) owned.current.delete(runId);
+      setDraft("");
+    } catch (e) {
+      setTasks(rows => rows.map(t => t.id === task.id ? { ...t, status: "failed", error: String(e) } : t));
+    } finally { starting.current = false; pending.current = []; }
+  }
+  async function decide(task: CrewTask, requestId: string, allow: boolean) {
+    try { await invoke("respond_permission", { runId: task.runId, requestId, allow, remember: false }); }
+    catch (e) { setError(String(e)); }
+  }
+  async function stop(task: CrewTask) {
+    try { await invoke("cancel_run", { runId: task.runId }); }
+    catch (e) { setError(String(e)); }
+  }
+  function picker(label: string, value: string, update: (v: string) => void, key: string) {
+    return <label><span>{label}</span><select value={value} disabled={busy || !models.length} onChange={e => { update(e.target.value); save(key, e.target.value); }}>
+      <option value="">모델 선택</option>{models.map(m => <option key={m.namespaced ?? m.id} value={m.namespaced ?? m.id}>{m.display_name ?? m.label ?? m.namespaced ?? m.id}</option>)}
+    </select></label>;
+  }
+  return <section className="crew-panel" aria-label="Firstmate 작업">
+    <div className="crew-intro"><div><span className="eyebrow">FIRSTMATE / CREW</span><h2>Firstmate에게 맡기기</h2><p>작업 배분·크루 감시·결과 검토를 Firstmate에게 맡깁니다.</p></div></div>
+    <div className="crew-models">{picker("Firstmate 모델", firstmate, setFirstmate, "agentdock.captainModel")}{picker("Crew 선호 모델", crew, setCrew, "agentdock.crewModel")}</div>
+    <p className="settings-help">프로젝트: {projectDir || "대화 탭에서 프로젝트 폴더를 선택하세요"}</p>
+    <label className="check"><input type="checkbox" checked={allowWrites} disabled={busy} onChange={e => setAllowWrites(e.target.checked)} />파일 변경 허용</label>
+    <div className="crew-compose"><input value={draft} disabled={busy} onChange={e => setDraft(e.target.value)} onKeyDown={e => { if (e.key === "Enter" && !e.nativeEvent.isComposing) void start(); }} placeholder="예: 로그인 오류를 조사하고 수정해줘" aria-label="Firstmate에게 할 일" /><button disabled={busy || !ready || !draft.trim() || !projectDir || !firstmate || !crew} onClick={() => void start()}>맡기기</button></div>
+    <p className="settings-help">동시에 한 지시를 실행합니다. 크루 생성 여부와 결과는 실행 기록으로 확인하세요. 앱 종료 후 자동 감시 복구는 아직 지원하지 않습니다.</p>
+    {error && <p role="alert" className="crew-model-error">{error}</p>}
+    <div className="crew-list">{tasks.map(task => <article className="crew-task" key={task.id}>
+      <div className="crew-task-top"><span className={`crew-status crew-status-${task.status}`}>{labels[task.status]}</span><span>Firstmate</span></div>
+      <h3>{task.title}</h3><div className="crew-task-model">{task.model} → {task.crewModel}</div>
+      <small>{task.projectDir}</small>
+      {task.output && <pre className="crew-output">{task.output}</pre>}
+      {task.activity.length > 0 && <details><summary>실행 기록 ({task.activity.length})</summary><pre className="crew-output">{task.activity.join("\n")}</pre></details>}
+      {task.error && <p className="crew-model-error" role="alert">{task.error}</p>}
+      {task.permissions.map(p => <div key={p.request_id}><p>{p.description || p.tool}</p><pre className="crew-output">{p.input}</pre><button onClick={() => void decide(task, p.request_id, true)}>허용</button><button onClick={() => void decide(task, p.request_id, false)}>거절</button></div>)}
+      {task.runId && ["running", "approval"].includes(task.status) && <button onClick={() => void stop(task)}>중지</button>}
+    </article>)}</div>
   </section>;
 }
