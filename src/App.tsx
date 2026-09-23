@@ -6,6 +6,7 @@ import "./App.css";
 import type { AvailabilitySnapshot, CliId, Evidence, ModelOption, RunEvent } from "./types";
 import { useTelemetry } from "./useTelemetry";
 import { QuotaFooter, ResourcePanel, UsagePanel } from "./DockPanels";
+import { CrewPanel } from "./CrewPanel";
 import { openUrl } from "@tauri-apps/plugin-opener";
 
 const CLI_LABEL: Record<CliId, string> = {
@@ -46,6 +47,7 @@ const STORAGE_CLI = "agentdock.cli";
 const STORAGE_CHAIN = "agentdock.chain";
 const STORAGE_ENABLED = "agentdock.enabled";
 const STORAGE_MODEL_PREFIX = "agentdock.model.";
+const STORAGE_OPACITY = "agentdock.opacity";
 
 const ALL_CLIS: CliId[] = ["codex", "claude", "gemini", "opencode", "antigravity"];
 
@@ -314,17 +316,19 @@ function App() {
   const [rechecking, setRechecking] = useState(false);
   const [dragging, setDragging] = useState<CliId | null>(null);
   const [dragOver, setDragOver] = useState<CliId | null>(null);
-  const [tab, setTab] = useState<"overview" | "chat" | "settings">("overview");
+  const [tab, setTab] = useState<"overview" | "chat" | "crew" | "settings">("overview");
   const [modelChoice, setModelChoice] = useState<Record<string, string>>(() => loadModelChoices());
   const [modelOptions, setModelOptions] = useState<Record<string, ModelOption[]>>({});
   const [modelLoading, setModelLoading] = useState<Record<string, boolean>>({});
-  const [loginBusy, setLoginBusy] = useState<CliId | null>(null);
-  const [loginMsg, setLoginMsg] = useState<Record<string, string>>({});
   const [convs, setConvs] = useState<Conversation[]>([]);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [projectDir, setProjectDir] = useState<string>(() => loadStored(STORAGE_DIR, ""));
   const [cli, setCli] = useState<CliId>(() => loadStored(STORAGE_CLI, "claude") as CliId);
   const [allowWrites, setAllowWrites] = useState(false);
+  const [opacity, setOpacity] = useState(() => {
+    const value = Number(loadStored(STORAGE_OPACITY, "1"));
+    return Number.isFinite(value) ? Math.min(1, Math.max(0.55, value)) : 1;
+  });
   const [input, setInput] = useState("");
   const [error, setError] = useState("");
   const runMapRef = useRef<Record<number, number>>({});
@@ -489,19 +493,6 @@ function App() {
       setError(String(e));
     } finally {
       setRechecking(false);
-    }
-  }
-
-  async function login(target: CliId) {
-    setLoginBusy(target);
-    setLoginMsg((m) => ({ ...m, [target]: "로그인 진행 중… 콘솔 창 또는 브라우저를 확인하세요." }));
-    try {
-      const msg = await invoke<string>("login_cli", { cli: target });
-      setLoginMsg((m) => ({ ...m, [target]: msg }));
-    } catch (e) {
-      setLoginMsg((m) => ({ ...m, [target]: String(e) }));
-    } finally {
-      setLoginBusy(null);
     }
   }
 
@@ -726,12 +717,16 @@ function App() {
   };
 
   return (
-    <div className={`widget-container ${isExpanded ? "expanded" : "collapsed"} ${quotaActive ? "quota-open" : ""}`}>
+    <div className={`widget-container ${isExpanded ? "expanded" : "collapsed"} ${quotaActive ? "quota-open" : ""}`} style={{ opacity }}>
       <div className="widget-header" onMouseDown={startDrag}>
         <span className="brand-mark" aria-hidden="true">a<span>·</span></span>
         <span className="widget-title">Agent Dock</span>
         <span className={`connection-badge ${online ? "online" : "offline"}`} title={telemetry.health.error ?? `Opencodex ${telemetry.health.data?.version ?? "연결 중"}`}><i />{online ? "LIVE" : telemetry.health.error ? "OFFLINE" : "연결 중"}</span>
         <div className="window-actions">
+          <label className="opacity-control" title={`창 투명도 ${Math.round(opacity * 100)}%`} onMouseDown={e => e.stopPropagation()}>
+            <span aria-hidden="true">◐</span>
+            <input aria-label="창 투명도" type="range" min="0.55" max="1" step="0.05" value={opacity} onChange={e => { const next = Number(e.currentTarget.value); setOpacity(next); store(STORAGE_OPACITY, String(next)); }} />
+          </label>
           <button className="icon-button" aria-label="Opencodex 대시보드 열기" title="Opencodex 대시보드" onClick={openDashboard}>↗</button>
           <button className="icon-button toggle-btn" onClick={toggleWidget} aria-label={isExpanded ? "위젯 접기" : "위젯 펼치기"} aria-expanded={isExpanded}>{isExpanded ? "⌃" : "⌄"}</button>
           <button className="icon-button close-button" aria-label="위젯 닫기" title="진행 중인 대화를 중지한 뒤 닫을 수 있습니다" disabled={convs.some(c => c.state === "running")} onClick={() => void closeWidget().catch(e => setError(String(e)))}>×</button>
@@ -740,10 +735,11 @@ function App() {
       {!isExpanded && <div className="compact-body"><UsagePanel telemetry={telemetry} compact range={usageRange} onRange={setUsageRange} /><ResourcePanel telemetry={telemetry} compact /></div>}
       {isExpanded && (
         <>
-        <nav className="dock-tabs" aria-label="위젯 메뉴">{([['overview', '개요'], ['chat', '대화'], ['settings', '설정']] as const).map(([key, label]) => <button key={key} className={tab === key ? 'active' : ''} aria-current={tab === key ? 'page' : undefined} onClick={() => { setTab(key); setQuotaActive(null); }}>{label}{key === 'chat' && pendingTotal > 0 && <span className="count-badge">{pendingTotal}</span>}</button>)}<button className="refresh-button" onClick={() => setRefresh(v => v + 1)} title="연결·사용량·한도 새로고침" aria-label="새로고침">↻</button></nav>
+        <nav className="dock-tabs" aria-label="위젯 메뉴">{([['overview', '개요'], ['chat', '대화'], ['settings', '설정']] as const).map(([key, label]) => <button key={key} className={tab === key ? 'active' : ''} aria-current={tab === key ? 'page' : undefined} onClick={() => { setTab(key); setQuotaActive(null); }}>{label}{key === 'chat' && pendingTotal > 0 && <span className="count-badge">{pendingTotal}</span>}</button>)}<button className={tab === "crew" ? "active" : ""} onClick={() => { setTab("crew"); setQuotaActive(null); }}>Crew</button><button className="refresh-button" onClick={() => setRefresh(v => v + 1)} title="연결·사용량·한도 새로고침" aria-label="새로고침">↻</button></nav>
         <div className={`app tab-${tab}`}>
-          {tab === "overview" && <><ResourcePanel telemetry={telemetry} compact={false} /><UsagePanel telemetry={telemetry} compact={false} range={usageRange} onRange={setUsageRange} /><div className="section-heading"><h2>CLI 상태</h2><span className="subtle">드래그로 우선순위 변경</span></div></>}
-          <header className="cli-row" title="카드를 드래그해 우선순위를 바꿉니다">
+          {tab === "crew" && <CrewPanel projectDir={projectDir} />}
+          {tab === "overview" && <><ResourcePanel telemetry={telemetry} compact={false} /><UsagePanel telemetry={telemetry} compact={false} range={usageRange} onRange={setUsageRange} /><div className="section-heading"><h2>AI 우선순위</h2><span className="subtle">드래그로 선호 순서 변경</span></div></>}
+          <header className="cli-row" title="카드를 드래그해 선호 AI 순서를 바꿉니다">
         {cliOrder.map((id) => {
           const s = statuses.find((x) => x.cli === id);
           const state = s?.state ?? "unknown";
@@ -752,7 +748,7 @@ function App() {
             <div
               key={id}
               className={`cli-card state-${state}${id === cli ? " current" : ""}${dragging === id ? " dragging" : ""}${dragOver === id && dragging !== id ? " drag-over" : ""}`}
-              title={`${rank}순위${s?.version ? ` · 버전 ${s.version}` : ""} · 드래그해서 순서 변경`}
+              title={`선호 ${rank}순위 · ${STATE_LABEL[state]} · 드래그해서 AI 순서를 변경`}
               draggable
               role="button"
               tabIndex={0}
@@ -786,8 +782,8 @@ function App() {
             </div>
           );
         })}
-        <button className="small settings-btn" onClick={() => setTab("settings")} title="CLI 레지스트리: 사용 여부·로그인·모델">
-          ⚙ CLI 설정
+        <button className="small settings-btn" onClick={() => setTab("settings")} title="AI 모델 설정: 사용 여부·로그인·모델">
+          ⚙ AI 모델 설정
         </button>
         {pendingTotal > 0 && <span className="perm-badge">승인 대기 {pendingTotal}</span>}
       </header>
@@ -900,8 +896,8 @@ function App() {
             <input type="checkbox" checked={current?.allowWrites ?? allowWrites} disabled={!!current} onChange={(e) => setAllowWrites(e.currentTarget.checked)} />
             파일 쓰기 허용
           </label>
-          <span className="routing" title="라우팅 프로필 '코딩 작업' 기준, 지금 가용한 최우선 CLI">
-            추천: {recommended ? CLI_LABEL[recommended] : "없음"}
+          <span className="routing" title="현재 가용한 선호 AI와 한도 상태">
+            우선 AI: {recommended ? CLI_LABEL[recommended] : "없음"}
           </span>
         </div>
         <div className="actions">
@@ -922,11 +918,6 @@ function App() {
               </span>
               <span className={`evidence evidence-${detail.evidence}`}>{EVIDENCE_BADGE[detail.evidence]}</span>
               <span className="sb-spacer" />
-              {(detail.state === "auth_required" || detail.state === "unavailable" || detail.state === "unknown") && (
-                <button className="small" onClick={() => void login(detail.cli)} disabled={loginBusy !== null}>
-                  {loginBusy === detail.cli ? "로그인 중…" : "로그인"}
-                </button>
-              )}
               <button className="small" onClick={() => void recheck(detail.cli)} disabled={rechecking}>
                 {rechecking ? "재검사 중…" : "재검사"}
               </button>
@@ -951,12 +942,11 @@ function App() {
             )}
             <p className="muted">계정: {accountLine(detail)}</p>
             <p className="muted">
-              라우팅 순위 {allOrder.indexOf(detail.cli) + 1}/{allOrder.length} · 버전 {detail.version ?? "?"} · 갱신{" "}
+              선호 순위 {allOrder.indexOf(detail.cli) + 1}/{allOrder.length} · 버전 {detail.version ?? "?"} · 갱신{" "}
               {dateTime(detail.checked_at)} · 다음 재검사 {dateTime(detail.next_check_at)}
               {detail.recovered_at !== null && ` · 복귀 ${dateTime(detail.recovered_at)}`}
             </p>
             {detail.last_error && <p className="error">마지막 오류: {detail.last_error}</p>}
-            {loginMsg[detail.cli] && <p className="muted">{loginMsg[detail.cli]}</p>}
           </div>
         )}
         {cliOrder.map((id) => {
@@ -1000,7 +990,7 @@ function App() {
               </div>
             </div>
             <div className="connection-card"><div><strong>Opencodex</strong><p className="muted">{telemetry.health.data?.url ?? "로컬 서버 연결 대기"}</p><small>{telemetry.health.data?.version ? `v${telemetry.health.data.version}` : "서버를 시작하면 자동 연결됩니다"}</small></div><button onClick={openDashboard}>계정 관리 ↗</button></div>
-            <p className="muted settings-help">AI 제공자·계정은 Opencodex에서 관리합니다. 아래 로그인은 각 CLI의 자체 로그인입니다.</p>
+            <p className="muted settings-help">AI 제공자·계정·OAuth는 Opencodex에서 관리합니다. 여기서는 연결 상태와 모델 우선순위만 조정합니다.</p>
             <div className="registry-cards">
                 {allOrder.map((id, i) => {
                   const s = statuses.find((x) => x.cli === id);
@@ -1028,14 +1018,8 @@ function App() {
                         />
                       </label></div>
                       <p className="registry-account">{s ? accountLine(s) : "확인 중"}</p>
-                      <div className="registry-controls">
-                        <button className="small" onClick={() => void login(id)} disabled={loginBusy !== null || !enabled}>
-                          {loginBusy === id ? "진행 중…" : "로그인"}
-                        </button>
-                        {enabled && renderModelSelect(id, false)}
-                      </div>
+                      <div className="registry-controls">{enabled && renderModelSelect(id, false)}</div>
                       {s?.last_error && <p className="inline-error">{s.last_error}</p>}
-                      {loginMsg[id] && <p className="muted small-text">{loginMsg[id]}</p>}
                     </article>
                   );
                 })}

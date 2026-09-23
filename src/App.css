@@ -810,6 +810,8 @@ input { accent-color:var(--accent); }
 .connection-badge.online { color:var(--accent); }
 .connection-badge.offline { color:#ecb080; }
 .window-actions { display:flex;margin-left:auto;gap:2px; }
+.opacity-control { display:flex;align-items:center;gap:4px;height:25px;padding:0 4px;color:var(--muted);font-size:13px;cursor:pointer; }
+.opacity-control input { width:58px;height:3px;accent-color:var(--accent);cursor:pointer; }
 .icon-button { border:0;background:transparent;width:25px;height:25px;padding:0;font-size:18px;color:var(--muted);flex:none; }
 .close-button:hover { background:#63383b;color:white; }
 .subtle,.metric-label,.metric-description { color:var(--muted); }
@@ -934,4 +936,37 @@ input { accent-color:var(--accent); }
 .registry-controls select { width:100%; }
 .settings-help { font-size:10px;line-height:1.7;margin:12px 0; }
 .small-text { max-width:100%;overflow-wrap:anywhere; }
+.tab-crew { overflow:auto;padding-top:12px; }
+.tab-crew .main,.tab-crew .toolbar,.tab-crew .cli-row,.tab-crew .statusbar { display:none; }
+.crew-panel { display:flex;flex-direction:column;gap:12px;min-height:100%; }
+.crew-intro { display:flex;justify-content:space-between;gap:12px;align-items:flex-start;padding:4px 2px; }
+.crew-intro h2 { margin:4px 0 5px;font-size:18px;letter-spacing:-.4px; }
+.crew-intro p { margin:0;color:var(--muted);font-size:10px;line-height:1.6; }
+.eyebrow { color:var(--accent);font-size:9px;letter-spacing:1.2px;font-weight:700; }
+.crew-count { color:var(--muted);font-size:10px;white-space:nowrap;padding-top:5px; }
+.crew-compose { display:flex;gap:7px;align-items:center; }
+.crew-compose input { flex:1;min-width:0;border:1px solid var(--line);border-radius:8px;background:#1b232c;color:inherit;padding:9px 10px;font-size:11px;outline:none; }
+.crew-compose input:focus { border-color:#657e55; }
+.crew-compose button { border:0;border-radius:8px;background:var(--accent);color:#182018;padding:9px 11px;font-size:10px;font-weight:700;white-space:nowrap; }
+.crew-compose button:disabled { opacity:.4; }
+.crew-models { display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:7px; }
+.crew-models label { display:flex;flex-direction:column;gap:4px;color:var(--muted);font-size:9px; }
+.crew-models select { min-width:0;width:100%;border:1px solid var(--line);border-radius:7px;background:#1b232c;color:#dce5ed;padding:7px 6px;font-size:10px; }
+.crew-model-error { margin:0;color:#ffb6ae;font-size:9px;overflow-wrap:anywhere; }
+.crew-empty { display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:190px;border:1px dashed #3c4953;border-radius:12px;color:var(--muted);text-align:center; }
+.crew-empty-mark { display:grid;place-items:center;width:30px;height:30px;margin-bottom:9px;border:1px solid #526643;border-radius:50%;color:var(--accent);font-size:20px; }
+.crew-empty strong { color:#dce5ed;font-size:12px; }
+.crew-empty p { margin:5px 0 0;font-size:10px; }
+.crew-list { display:flex;flex-direction:column;gap:8px; }
+.crew-task { border:1px solid var(--line);border-radius:10px;background:#1b232c;padding:11px; }
+.crew-task-top { display:flex;justify-content:space-between;align-items:center;gap:8px; }
+.crew-status { display:inline-flex;align-items:center;gap:5px;font-size:9px; }
+.crew-status i { width:6px;height:6px;border-radius:50%;background:currentColor; }
+.crew-status-queued { color:var(--muted); }.crew-status-running { color:#b9ef88; }.crew-status-approval { color:#edbc84; }.crew-status-done { color:#82c5db; }
+.crew-worker { color:var(--muted);font-size:9px; }
+.crew-task h3 { margin:8px 0 7px;font-size:12px;font-weight:600; }
+.crew-task-meta { display:flex;justify-content:space-between;gap:8px;color:var(--muted);font-size:9px;overflow:hidden; }
+.crew-task-meta span { overflow:hidden;text-overflow:ellipsis;white-space:nowrap; }
+.crew-task-model { margin-top:7px;color:#b9ef88;font-size:9px; }
+.crew-start { margin-top:9px; }.crew-hint { display:block;margin-top:9px;color:var(--muted);font-size:9px; }
 @media(prefers-reduced-motion:reduce) { .meter i { transition:none; } }

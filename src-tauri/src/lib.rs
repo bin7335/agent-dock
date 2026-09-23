@@ -907,6 +907,12 @@ async fn get_ocx_quotas() -> Result<serde_json::Value, String> {
     Ok(serde_json::json!({"reports": quota["reports"], "providers": names, "generatedAt": quota["generatedAt"]}))
 }
 
+/// Opencodex가 현재 노출하는 provider/model 카탈로그를 반환한다.
+#[tauri::command]
+async fn get_ocx_models() -> Result<serde_json::Value, String> {
+    parse_ocx_response(&ocx_request("/api/models", true, "8").await?)
+}
+
 #[cfg(test)]
 mod ocx_tests {
     use super::*;
@@ -1005,6 +1011,10 @@ pub fn run() {
         })
         .setup(move |app| {
             let handle = app.handle().clone();
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
             // 이전 실행의 스냅샷 복원 (리셋이 지난 윈도우는 import에서 폐기, 사용 여부도 복원)
             let stored = load_store(&handle);
             if let Ok(mut m) = monitor.lock() {
@@ -1045,6 +1055,7 @@ pub fn run() {
             get_ocx_usage,
             get_ocx_health,
             get_ocx_quotas,
+            get_ocx_models,
             resources::get_system_resources
         ])
         .run(tauri::generate_context!())

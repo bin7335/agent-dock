@@ -117,3 +117,13 @@ PRD·설계 근거·스파이크 실측·구현 현황의 원본은 위키 `wiki
    - UI 하단에 파란색 🔑 AI 일괄 로그인 (oauth) 버튼을 추가하고 oauth-collect 모듈을 동적 임포트하여 OAUTH_PROVIDERS["anthropic"].login 플로우를 연결했습니다.
    - **이슈**: 데스크톱 앱(Tauri) 샌드박스로 인해 window.open이 막혀 브라우저가 열리지 않는 현상을 발견했습니다.
    - **대응 방안**: Tauri 네이티브 플러그인(@tauri-apps/plugin-opener)으로 강제 브라우저 팝업을 시도하도록 패치했으며, 정확한 오류 지점 추적을 위해 1~6단계의 상세 디버그 Alert 창을 심어두었습니다 (여기서 일시 중지됨).
+
+## Opencodex 연결 기준 (2026-09-22)
+
+- 기준 저장소: https://github.com/coseung2/opencodex
+- Windows 설치: npm install -g @coseung2/opencodex@next
+- 실행: ocx start 또는 백그라운드 서비스 ocx service start
+- 기본 프록시·대시보드: http://127.0.0.1:10100
+- Agent Dock은 .opencodex/runtime-port.json의 포트를 읽고 /healthz, /api/usage, /api/provider-quotas, /api/providers를 조회한다.
+- 인증 API는 .opencodex/admin-api-token을 Bearer 토큰으로 사용한다.
+- 현재 실측: healthz와 provider quota API가 200 응답하며 OpenAI(Codex login) 주간 사용률 46%를 반환했다.
