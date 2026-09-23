@@ -451,9 +451,7 @@ async fn start_firstmate(
     if !project.is_dir() { return Err("프로젝트 경로가 폴더가 아닙니다".into()); }
     get_ocx_health().await?;
     let mode = parse_ocx_response(&ocx_request("/api/v2", true, "8").await?)?;
-    if mode["multiAgentMode"].as_str() != Some("v1") {
-        return Err("Opencodex 대시보드에서 협업 모드를 v1으로 설정한 뒤 다시 맡겨 주세요".into());
-    }
+    validate_crew_mode(mode["multiAgentMode"].as_str().unwrap_or(""))?;
     let prompt = format!(
         "You are Firstmate, the user's supervising coding agent. The user is the captain.\n\
          Break the task into concrete bounded assignments. Use the available native collaboration tools to delegate to crew where useful.\n\
@@ -854,6 +852,10 @@ fn ocx_base_url() -> Result<String, String> {
 }
 
 async fn ocx_request(path: &str, authenticated: bool, timeout: &str) -> Result<String, String> {
+    ocx_request_body(path, authenticated, timeout, None).await
+}
+
+async fn ocx_request_body(path: &str, authenticated: bool, timeout: &str, body: Option<String>) -> Result<String, String> {
     use std::process::Stdio;
     use tokio::io::AsyncWriteExt;
 
@@ -867,6 +869,9 @@ async fn ocx_request(path: &str, authenticated: bool, timeout: &str) -> Result<S
     let curl = std::path::PathBuf::from("curl");
 
     let mut command = tokio::process::Command::new(curl);
+    if let Some(body) = body {
+        command.args(["--request", "PUT", "--header", "Content-Type: application/json", "--data-raw", &body]);
+    }
     // Do not flash a console window on every poll.
     #[cfg(windows)]
     command.creation_flags(0x08000000);
@@ -952,6 +957,25 @@ async fn get_ocx_quotas() -> Result<serde_json::Value, String> {
 #[tauri::command]
 async fn get_ocx_models() -> Result<serde_json::Value, String> {
     parse_ocx_response(&ocx_request("/api/models", true, "8").await?)
+}
+
+fn validate_crew_mode(mode: &str) -> Result<(), String> {
+    match mode {
+        "v1" | "default" | "v2" => Ok(()),
+        _ => Err("지원하지 않는 협업 방식입니다".into()),
+    }
+}
+
+#[tauri::command]
+async fn get_crew_mode() -> Result<serde_json::Value, String> {
+    parse_ocx_response(&ocx_request("/api/v2", true, "8").await?)
+}
+
+#[tauri::command]
+async fn set_crew_mode(mode: String) -> Result<serde_json::Value, String> {
+    validate_crew_mode(&mode)?;
+    let body = serde_json::json!({"multiAgentMode": mode}).to_string();
+    parse_ocx_response(&ocx_request_body("/api/v2", true, "30", Some(body)).await?)
 }
 
 #[cfg(test)]
@@ -1098,6 +1122,8 @@ pub fn run() {
             get_ocx_health,
             get_ocx_quotas,
             get_ocx_models,
+            get_crew_mode,
+            set_crew_mode,
             resources::get_system_resources
         ])
         .run(tauri::generate_context!())

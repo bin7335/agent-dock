@@ -129,7 +129,7 @@ PRD·설계 근거·스파이크 실측·구현 현황의 원본은 위키 `wiki
 - 현재 실측: healthz와 provider quota API가 200 응답하며 OpenAI(Codex login) 주간 사용률 46%를 반환했다.
 # Firstmate execution (2026-09-23)
 
-- Crew now starts a supervising Codex session through `start_firstmate`, with a per-process Opencodex URL and a v1 mode preflight check.
+- Crew starts a supervising Codex session through `start_firstmate`, with a per-process Opencodex URL. Advanced settings now read/write the shared `/api/v2` mode (v1/default/v2; default is labeled base). Changes are locked during Crew work and affect new sessions; the v1-only preflight restriction was removed.
 - Firstmate receives delegation, monitoring, worktree-isolation and review instructions; actual collaboration remains native Codex behavior, not a separate durable scheduler.
 - UI shows streamed reports, collaboration tool calls, approval requests and terminal states. Models and project paths are captured per assignment. Writes are opt-in; only one parent assignment runs at a time.
 - Crew stays mounted across tabs and collapse. Restart recovery, independent worker cards, enforced worktree allocation and automatic merge are NOT implemented.

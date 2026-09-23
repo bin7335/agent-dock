@@ -5,6 +5,9 @@ import type { RunEvent } from "./types";
 import { reduceCrewEvent, type CrewTask } from "./crewState";
 
 interface OcxModel { id: string; namespaced?: string; label?: string; display_name?: string; disabled?: boolean; }
+type CrewMode = "v1" | "default" | "v2";
+interface ModeResponse { multiAgentMode: CrewMode; warnings?: string[]; }
+const modes: { id: CrewMode; label: string }[] = [{ id: "v1", label: "v1 · 기본" }, { id: "default", label: "base · 자동" }, { id: "v2", label: "v2 · 고급" }];
 const read = (key: string) => { try { return localStorage.getItem(key) ?? ""; } catch { return ""; } };
 const save = (key: string, value: string) => { try { localStorage.setItem(key, value); } catch { /* storage unavailable */ } };
 const labels = { running: "감시 중", starting: "시작 중", approval: "승인 필요", done: "완료", failed: "실패", cancelled: "중지됨" };
@@ -15,6 +18,10 @@ export function CrewPanel({ projectDir, onBusy }: { projectDir: string; onBusy: 
   const [models, setModels] = useState<OcxModel[]>([]);
   const [error, setError] = useState("");
   const [ready, setReady] = useState(false);
+  const [mode, setMode] = useState<CrewMode | null>(null);
+  const [modeSaving, setModeSaving] = useState(false);
+  const [modeMessage, setModeMessage] = useState("");
+  const modeLock = useRef(false);
   const [firstmate, setFirstmate] = useState(() => read("agentdock.captainModel"));
   const [crew, setCrew] = useState(() => read("agentdock.crewModel"));
   const [allowWrites, setAllowWrites] = useState(false);
@@ -25,6 +32,9 @@ export function CrewPanel({ projectDir, onBusy }: { projectDir: string; onBusy: 
   useEffect(() => { onBusy(busy); }, [busy, onBusy]);
   useEffect(() => {
     let disposed = false;
+    invoke<ModeResponse>("get_crew_mode").then(result => {
+      if (!disposed) setMode(modes.some(m => m.id === result.multiAgentMode) ? result.multiAgentMode : null);
+    }).catch(e => { if (!disposed) setError(`협업 방식 조회 실패: ${String(e)}`); });
     const off = listen<RunEvent>("agent-event", ({ payload }) => {
       const id = owned.current.get(payload.run_id);
       if (id === undefined) {
@@ -46,8 +56,26 @@ export function CrewPanel({ projectDir, onBusy }: { projectDir: string; onBusy: 
     }).catch(e => { if (!disposed) setError(String(e)); });
     return () => { disposed = true; void off.then(unlisten => unlisten()).catch(() => {}); };
   }, []);
+  async function changeMode(next: CrewMode) {
+    if (busy || starting.current || modeLock.current) return;
+    modeLock.current = true;
+    setModeSaving(true);
+    setModeMessage("");
+    try {
+      const result = await invoke<ModeResponse>("set_crew_mode", { mode: next });
+      if (!modes.some(m => m.id === result.multiAgentMode)) throw new Error("협업 방식 응답을 확인할 수 없습니다");
+      setMode(result.multiAgentMode);
+      setModeMessage("저장됨 · 다음 작업부터 적용됩니다.");
+      setError("");
+    } catch (e) {
+      setError(`협업 방식 변경 실패: ${String(e)}`);
+      // A timed-out write may have reached the server. Re-read instead of claiming rollback.
+      try { const current = await invoke<ModeResponse>("get_crew_mode"); setMode(modes.some(m => m.id === current.multiAgentMode) ? current.multiAgentMode : null); }
+      catch { setMode(null); }
+    } finally { modeLock.current = false; setModeSaving(false); }
+  }
   async function start() {
-    if (starting.current || busy || !ready || !draft.trim() || !projectDir || !firstmate || !crew) return;
+    if (starting.current || modeLock.current || !mode || busy || !ready || !draft.trim() || !projectDir || !firstmate || !crew) return;
     starting.current = true;
     pending.current = [];
     const task: CrewTask = { id: Date.now(), title: draft.trim(), projectDir, model: firstmate, crewModel: crew, status: "starting", output: "", activity: [], permissions: [] };
@@ -80,9 +108,16 @@ export function CrewPanel({ projectDir, onBusy }: { projectDir: string; onBusy: 
   return <section className="crew-panel" aria-label="Firstmate 작업">
     <div className="crew-intro"><div><span className="eyebrow">FIRSTMATE / CREW</span><h2>Firstmate에게 맡기기</h2><p>작업 배분·크루 감시·결과 검토를 Firstmate에게 맡깁니다.</p></div></div>
     <div className="crew-models">{picker("Firstmate 모델", firstmate, setFirstmate, "agentdock.captainModel")}{picker("Crew 선호 모델", crew, setCrew, "agentdock.crewModel")}</div>
+    <details className="crew-mode-settings"><summary>고급 설정 · 협업 방식 {mode === "default" ? "base" : mode ?? "확인 필요"}</summary>
+      <div className="crew-mode-buttons" role="group" aria-label="협업 방식">{modes.map(item => <button key={item.id} aria-pressed={mode === item.id} disabled={busy || modeSaving} onClick={() => void changeMode(item.id)}>{item.label}</button>)}</div>
+      <p className="settings-help">Opencodex 공통 설정입니다. 다른 Codex 클라이언트의 새 세션에도 적용됩니다. 실행 중인 작업은 기존 방식을 유지합니다.</p>
+      <p className="settings-help">v1: 여러 회사 모델 혼용 · base: 모델별 기본 방식 · v2: 새로운 협업 방식</p>
+      {(mode === "default" || mode === "v2") && <p className="crew-model-error">ChatGPT에서 외부 모델로 위임할 때 암호화된 작업 전달이 제한될 수 있습니다. 전체 대화 복제는 부모 모델을 상속합니다.</p>}
+      <p role="status">{modeSaving ? "저장 중…" : modeMessage}</p>
+    </details>
     <p className="settings-help">프로젝트: {projectDir || "대화 탭에서 프로젝트 폴더를 선택하세요"}</p>
     <label className="check"><input type="checkbox" checked={allowWrites} disabled={busy} onChange={e => setAllowWrites(e.target.checked)} />파일 변경 허용</label>
-    <div className="crew-compose"><input value={draft} disabled={busy} onChange={e => setDraft(e.target.value)} onKeyDown={e => { if (e.key === "Enter" && !e.nativeEvent.isComposing) void start(); }} placeholder="예: 로그인 오류를 조사하고 수정해줘" aria-label="Firstmate에게 할 일" /><button disabled={busy || !ready || !draft.trim() || !projectDir || !firstmate || !crew} onClick={() => void start()}>맡기기</button></div>
+    <div className="crew-compose"><input value={draft} disabled={busy} onChange={e => setDraft(e.target.value)} onKeyDown={e => { if (e.key === "Enter" && !e.nativeEvent.isComposing) void start(); }} placeholder="예: 로그인 오류를 조사하고 수정해줘" aria-label="Firstmate에게 할 일" /><button disabled={busy || modeSaving || !mode || !ready || !draft.trim() || !projectDir || !firstmate || !crew} onClick={() => void start()}>맡기기</button></div>
     <p className="settings-help">동시에 한 지시를 실행합니다. 크루 생성 여부와 결과는 실행 기록으로 확인하세요. 앱 종료 후 자동 감시 복구는 아직 지원하지 않습니다.</p>
     {error && <p role="alert" className="crew-model-error">{error}</p>}
     <div className="crew-list">{tasks.map(task => <article className="crew-task" key={task.id}>
