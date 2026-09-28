@@ -1,0 +1,108 @@
+/* Palette values live here. Components consume semantic tokens below. */
+.widget-container {
+  color-scheme: dark;
+  --surface-app: #151a20;
+  --surface-panel: #1c222a;
+  --surface-card: #202a34;
+  --surface-input: #14181d;
+  --surface-code: #111318;
+  --text-main: #e4e8ee;
+  --muted: #a3afbc;
+  --line: #3e4a58;
+  --accent: #b9ef88;
+  --resource: #85baff;
+  --usage: #ffd08a;
+  --quota: #7de0b5;
+  --settings: #c4a8ff;
+  --warning: #ffc080;
+  --danger: #ffb6ae;
+}
+.widget-container.theme-light {
+  color-scheme: light;
+  --surface-app: #f4f6f8;
+  --surface-panel: #f7f9fb;
+  --surface-card: #ffffff;
+  --surface-input: #ffffff;
+  --surface-code: #ffffff;
+  --text-main: #1d232b;
+  --muted: #526171;
+  --line: #bec8d3;
+  --accent: #326f22;
+  --resource: #2466a8;
+  --usage: #865100;
+  --quota: #176a50;
+  --settings: #694299;
+  --warning: #945000;
+  --danger: #af2424;
+}
+@media (prefers-color-scheme: light) {
+  .widget-container.theme-system {
+    color-scheme: light;
+    --surface-app: #f4f6f8;
+    --surface-panel: #f7f9fb;
+    --surface-card: #ffffff;
+    --surface-input: #ffffff;
+    --surface-code: #ffffff;
+    --text-main: #1d232b;
+    --muted: #526171;
+    --line: #bec8d3;
+    --accent: #326f22;
+    --resource: #2466a8;
+    --usage: #865100;
+    --quota: #176a50;
+    --settings: #694299;
+    --warning: #945000;
+    --danger: #af2424;
+  }
+}
+.widget-container.widget-container { background: var(--surface-app); color: var(--text-main); }
+.widget-container :is(.panel,.dashboard-section,.registry-panel,.chat-sidebar,.code-tab,.chat-menu,.crew-task) { background: var(--surface-panel); color: var(--text-main); border-color: var(--line); }
+.widget-container :is(.metric-card,.connection-card,.registry-card,.preference-card,.cli-card,.crew-empty,.perm-card) { background: var(--surface-card); color: var(--text-main); border-color: var(--line); }
+.widget-container :is(button,select,textarea,input) { color: var(--text-main); border-color: var(--line); }
+.widget-container :is(select,textarea,input:not([type=range]):not([type=checkbox])) { background: var(--surface-input); }
+.widget-container :is(.metric-label,.metric-description,.subtle,.muted,.quota-subtitle,.quota-heading,.quota-window small,.sidebar-section-label,.sidebar-empty,.run-meta,.resource-inline,.usage-footnote,.compact-tokens small) { color: var(--muted); }
+.widget-container :is(.sidebar-file,.sidebar-folder,.sidebar-title,.chat-menu button,.resource-inline b,.quota-compact-row > span:first-child,.widget-title,.code-tab) { color: var(--text-main); }
+.widget-container :is(.sidebar-file:hover,.chat-menu button:hover:not(:disabled),.theme-buttons button.active,.crew-mode-buttons button[aria-pressed=true]) { background: color-mix(in srgb,var(--accent) 12%,var(--surface-card)); }
+.widget-container .metric-card { border-top: 2px solid var(--resource); background: color-mix(in srgb,var(--resource) 8%,var(--surface-card)); }
+.widget-container .usage-section { border-top: 2px solid var(--usage); background: color-mix(in srgb,var(--usage) 8%,var(--surface-panel)); }
+.widget-container .usage-section .cost-value { color: var(--usage); }
+.widget-container .preference-card { border-top: 2px solid var(--settings); background: color-mix(in srgb,var(--settings) 8%,var(--surface-card)); }
+.widget-container .connection-card { border-top: 2px solid var(--resource); background: color-mix(in srgb,var(--resource) 8%,var(--surface-card)); }
+.widget-container :is(.quota-footer,.quota-popover) { background: color-mix(in srgb,var(--quota) 8%,var(--surface-panel)); border-color: var(--quota); color: var(--text-main); }
+.widget-container :is(.quota-chip,.quota-compact-row) { background: color-mix(in srgb,var(--quota) 10%,var(--surface-card)); border-left: 3px solid var(--quota); color: var(--text-main); }
+.quota-compact-row { padding:3px 5px; border-radius:4px; }
+.widget-container :is(.quota-chip b,.quota-compact-row b,.quota-window strong) { color: var(--quota); }
+.widget-container .meter { background: color-mix(in srgb,var(--muted) 20%,var(--surface-card)); }
+.widget-container .quota-footer .meter i { background: var(--quota); }
+.widget-container :is(.quota-chip.low b,.quota-compact-row.low b,.quota-window.low strong,.data-notice,.warning-text) { color: var(--warning); }
+.widget-container :is(.low .meter i,.meter.warning i) { background: var(--warning); }
+.widget-container :is(.error,.inline-error,.dock-error) { color: var(--danger); }
+.widget-container .msg-text { color: var(--text-main); background: var(--surface-card); }
+.widget-container .role-user .msg-text { background: color-mix(in srgb,var(--accent) 12%,var(--surface-card)); }
+.widget-container .role-error .msg-text { color: var(--danger); background: color-mix(in srgb,var(--danger) 8%,var(--surface-card)); }
+.widget-container .crew-output { background:var(--surface-input); color:var(--text-main); border-color:var(--line); }
+.widget-container .crew-model-error { color:var(--danger); }
+.widget-container :is(.crew-task-model,.crew-intro p,.crew-task small,.crew-models label,.reset-credit-row) { color:var(--muted); }
+.widget-container :is(.sidebar-resize-handle,.chat-resize-handle) { background:var(--line); }
+.widget-container :is(.sidebar-resize-handle:hover,.chat-resize-handle:hover) { background:var(--accent); }
+/* Syntect emits a complete dark palette, including inline token colors.
+   Keep its canvas dark instead of combining dark tokens with a light canvas. */
+.widget-container :is(.code-preview,.code-highlight,.code-editor) { background:var(--surface-code); color:var(--text-main); }
+.widget-container .code-highlight pre { background:var(--surface-code); color:var(--text-main); }
+/* Remaining sections: force semantic surfaces */
+.widget-container :is(.account-quota-list,.account-quota,.reset-credit-row,.account-quota .section-heading) { background:var(--surface-card) !important; color:var(--text-main) !important; border-color:var(--line) !important; }
+.widget-container .account-quota-list { padding:8px 10px; border:1px solid var(--line); border-radius:8px; }
+.widget-container .reset-credit-row { border-radius:5px; padding:5px 7px; }
+.widget-container :is(.code-preview,.code-tab,.code-highlight,.code-editor) { border-color:var(--line) !important; }
+.widget-container .code-preview { background:var(--surface-code) !important; }
+.widget-container .code-tab { background:var(--surface-card) !important; color:var(--text-main) !important; }
+.widget-container .code-editor { background:var(--surface-code) !important; color:var(--text-main) !important; }
+.widget-container .code-highlight { background:var(--surface-code) !important; }
+.widget-container .code-highlight pre { background:var(--surface-code) !important; color:var(--text-main) !important; }
+.widget-container :is(button,select,textarea,input).small { background:var(--surface-input) !important; color:var(--text-main) !important; }
+.widget-container :is(.quota-popover,.quota-window,.quota-chip,.quota-compact-row,.account-quota-list,.account-quota,.reset-credit-row) { box-shadow:none; }
+.widget-container .quota-popover { background:var(--surface-panel) !important; color:var(--text-main) !important; border-color:var(--line) !important; }
+.widget-container .quota-window { border-top-color:color-mix(in srgb,var(--line) 65%,transparent) !important; }
+.widget-container .account-quota .quota-window { border-color:color-mix(in srgb,var(--line) 70%,transparent); }
+.widget-container .account-quota .data-notice { color:var(--warning); }
+.theme-light .code-highlight,.theme-system .code-highlight { color:#26313c; }

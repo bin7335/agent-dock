@@ -1,3 +1,5 @@
+import { useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import type { Telemetry } from "./useTelemetry";
 import type { QuotaReport, QuotaWindow } from "./types";
 
@@ -89,7 +91,8 @@ function resetText(value?: number) {
   return minutes >= 60 ? `${Math.floor(minutes / 60)}시간 ${minutes % 60}분 후 리셋` : `${minutes}분 후 리셋`;
 }
 
-export function QuotaFooter({ telemetry, active, onActive, compact }: { telemetry: Telemetry; active: string | null; onActive: (name: string | null) => void; compact: boolean }) {
+export function QuotaFooter({ telemetry, active, onActive, compact, onRefresh }: { telemetry: Telemetry; active: string | null; onActive: (name: string | null) => void; compact: boolean; onRefresh?: () => void }) {
+  const [consuming, setConsuming] = useState<string | null>(null);
   const { data, error } = telemetry.quotas;
   const providers = Array.from(new Set([...(data?.providers ?? []), ...(data?.reports.map(r => r.provider) ?? [])]));
   const reportFor = (name: string) => data?.reports.find(r => r.provider === name);
@@ -97,32 +100,71 @@ export function QuotaFooter({ telemetry, active, onActive, compact }: { telemetr
   const windows = quotaWindows(report);
   const show = (name: string | null) => onActive(name);
   const leave = () => onActive(null);
+  const providerClass = (name: string) => `provider-${name.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`;
   return <footer className={`quota-footer ${compact ? "compact" : ""}`} aria-label="AI 남은 한도" onMouseLeave={leave}
     onBlur={e => { if (!e.currentTarget.contains(e.relatedTarget)) leave(); }}>
-    <div className="quota-heading"><span>AI 남은 한도</span><span>{error ? (data ? "조회 실패 · 이전 값" : "조회 실패") : "마우스를 올려 상세 보기"}</span></div>
-    <div className="quota-strip">{providers.map(name => {
+    <div className="quota-heading"><span>AI 남은 한도</span><span>{error ? (data ? "조회 실패 · 이전 값" : "조회 실패") : compact ? "" : "마우스를 올려 상세 보기"}</span></div>
+    <div className={`quota-strip ${compact ? "quota-compact-list" : ""}`}>{providers.map(name => {
       const r = reportFor(name);
       const values = quotaWindows(r).map(w => remaining(w)).filter((v): v is number => v !== null);
       const left = values.length ? Math.min(...values) : null;
+      const daily = quotaWindows(r).find(w => w.remainingRequests != null && remaining(w) !== null);
       const stale = error || (r && Date.now() - r.updatedAt > 10 * 60000);
-      return <button key={name} className={`quota-chip ${active === name ? "selected" : ""} ${left !== null && left < 20 ? "low" : ""}`} aria-expanded={active === name}
-        onMouseEnter={() => show(name)} onFocus={() => show(name)} onClick={() => show(name)} aria-label={`${r?.label ?? name} 남은 한도 ${percentage(left)} 상세`}>
-        <span className="quota-chip-name">{r?.label ?? name}</span><b>{stale ? "~" : ""}{percentage(left)}</b>
-        <span className="meter"><i style={{ width: `${left ?? 0}%` }} /></span>
+      const label = name === "google" ? "Google API" : r?.label ?? name;
+      if (compact) return <div key={name} className={`quota-compact-row ${providerClass(name)} ${left !== null && left < 20 ? "low" : ""}`} title={label}>
+        <span>{label}</span><span className="meter"><i style={{ width: `${left ?? 0}%` }} /></span><b>{stale ? "~" : ""}{daily ? `${daily.remainingRequests}회` : left === null ? "미확인" : percentage(left)}</b>
+      </div>;
+      return <button key={name} className={`quota-chip ${providerClass(name)} ${active === name ? "selected" : ""} ${left !== null && left < 20 ? "low" : ""}`} aria-expanded={active === name}
+        onMouseEnter={() => show(name)} onFocus={() => show(name)} onClick={() => show(name)} aria-label={`${label} 남은 한도 ${percentage(left)} 상세`}>
+        <span className="quota-chip-name" title={label}>{label}</span><b>{stale ? "~" : ""}{daily ? `${daily.remainingRequests}회` : left === null ? "미확인" : percentage(left)}</b><span className="meter"><i style={{ width: `${left ?? 0}%` }} /></span>
       </button>;
     })}</div>
     {!providers.length && <p className="quota-empty">{error ? "한도 조회 실패 · 개요에서 새로고침하세요" : data ? "연결된 AI 제공자가 없습니다" : "AI 한도 불러오는 중…"}</p>}
-    {active && <div className="quota-popover" role="region" aria-label={`${report?.label ?? active} 한도 상세`}>
+    {active && <div className={`quota-popover ${providerClass(active)}`} role="region" aria-label={`${report?.label ?? active} 한도 상세`}>
       <div className="section-heading"><h3>{report?.label ?? active}</h3><button className="icon-button" aria-label="한도 상세 닫기" onClick={() => show(null)}>×</button></div>
       <p className="quota-subtitle">{report?.aggregation ? "계정 풀 합산 · " : ""}사용 가능 비율 · 가장 적게 남은 한도를 요약 표시</p>
+      {data?.providerErrors?.[active] && <p className="inline-error" role="alert">{data.providerErrors[active]}</p>}
+      {active === "google" && !windows.length && <p className="data-notice">Google API는 등록되어 있지만 현재 한도 조회 연동은 지원하지 않습니다. 모델·프로젝트별 한도는 <a href="https://aistudio.google.com/rate-limit" target="_blank" rel="noreferrer">Google AI Studio</a>에서 확인하세요.</p>}
       {windows.map((w, i) => { const left = remaining(w); return <div className={`quota-window ${left !== null && left < 20 ? "low" : ""}`} key={`${w.label}:${i}`}>
-        <div><span>{w.label}</span><strong>{w.valueLabel ?? (left === null ? "확인 중" : `${Math.round(left)}% 남음`)}</strong></div>
+        <div><span>{w.label}</span><strong>{w.valueLabel ?? (left === null ? "확인 중" : w.remainingRequests != null ? `${w.requestLimit}회 중 ${w.remainingRequests}회 남음` : `${Math.round(left)}% 남음`)}</strong></div>
+        {w.usedRequests != null && <small>오늘 사용 {w.usedRequests}회 · 무료 모델 일일 요청 기준</small>}
         {left !== null && <div className="meter"><i style={{ width: `${left}%` }} /></div>}
-        <small>{resetText(w.resetAt)}</small>
+        {!report?.aggregation && <small>{resetText(w.resetAt)}</small>}
       </div>; })}
       {!windows.length && <p className="quota-empty">이 제공자의 한도 정보가 없습니다. 사용 가능 여부와는 별개입니다.</p>}
       {(error || (report && Date.now() - report.updatedAt > 10 * 60000)) && <p className="data-notice">이전 조회 값입니다. 현재 한도와 다를 수 있습니다.</p>}
       {report && <small className="subtle">{new Date(report.updatedAt).toLocaleTimeString("ko-KR")} 기준 · OCX 한도 정보</small>}
+      {active === "openai" && <section className="account-quota-list" aria-label="OpenAI 계정별 한도">
+        <h4>계정별 상세 {telemetry.accounts.data ? `(${telemetry.accounts.data.accounts.length})` : ""}</h4>
+        {telemetry.accounts.error && <p className="inline-error" role="alert">계정 조회 실패{telemetry.accounts.data ? " · 이전 값 표시" : ""}: {telemetry.accounts.error}</p>}
+        {!telemetry.accounts.data && !telemetry.accounts.error && <p role="status">계정 한도를 불러오는 중…</p>}
+        {telemetry.accounts.data?.accounts.length === 0 && <p className="muted">등록된 Codex 계정이 없습니다.</p>}
+        {telemetry.accounts.data?.accounts.map(account => {
+          const rows = account.quota ? quotaWindows({ provider: "openai", label: "", updatedAt: account.quota.updatedAt ?? 0, quota: account.quota }) : [];
+          const selected = account.id === telemetry.accounts.data?.activeAccountId || (telemetry.accounts.data?.activeAccountId === null && account.isMain);
+          const stale = !!telemetry.accounts.error || account.quotaProbeSkipped || !account.quota?.updatedAt || Date.now() - account.quota.updatedAt > 600000;
+          return <article className="account-quota" key={account.id}>
+            <div className="section-heading"><strong>{account.alias || account.email || (account.isMain ? "기본 계정" : account.id)}</strong><span className="subtle">{account.plan ?? "플랜 미확인"}</span></div>
+            <p className="quota-subtitle">{[selected ? "현재 선택" : "풀 계정", account.isMain ? "기본 로그인" : "", account.paused ? "일시중지" : "", account.needsReauth ? "재로그인 필요" : ""].filter(Boolean).join(" · ")}</p>
+            {account.healthSummary && <p className="quota-subtitle">{account.healthSummary}</p>}
+            {account.quota?.resetCredits != null && <div className="reset-credit-row"><span>초기화 티켓 {account.quota.resetCredits}개</span><button className="small" disabled={consuming !== null || account.quota.resetCredits < 1} onClick={async () => {
+              if (!window.confirm(`${account.isMain ? "주계정" : "이 계정"}의 초기화 티켓 1개를 사용하시겠습니까?`)) return;
+              setConsuming(account.id);
+              try { await invoke("consume_codex_reset_credit", { accountId: account.id }); onRefresh?.(); }
+              catch (e) { window.alert(`티켓 사용 실패: ${String(e)}`); }
+              finally { setConsuming(null); }
+            }}>{consuming === account.id ? "사용 중…" : "티켓 사용"}</button></div>}
+            {rows.map((w, index) => { const left = remaining(w); return <div className={`quota-window ${left !== null && left < 20 ? "low" : ""}`} key={`${w.label}:${index}`}>
+              <div><span>{w.label}</span><strong>{w.valueLabel ?? (left === null ? "조회 불가" : `${Math.round(left)}% 남음`)}</strong></div>
+              {left !== null && <div className="meter"><i style={{ width: `${left}%` }} /></div>}
+              <small>{resetText(w.resetAt)}</small>
+            </div>; })}
+            {!rows.length && <p className="muted">한도 조회 불가</p>}
+            {account.quota?.updatedAt && <small className="subtle">{new Date(account.quota.updatedAt).toLocaleTimeString("ko-KR")} 기준</small>}
+            {stale && rows.length > 0 && <p className="data-notice">이전 조회 값 · 현재 한도와 다를 수 있습니다.</p>}
+          </article>;
+        })}
+      </section>}
     </div>}
   </footer>;
 }

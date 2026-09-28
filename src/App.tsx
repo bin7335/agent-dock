@@ -1,12 +1,14 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactElement } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import "./App.css";
+import "./theme.css";
 import type { AvailabilitySnapshot, CliId, Evidence, ModelOption, RunEvent } from "./types";
 import { useTelemetry } from "./useTelemetry";
 import { QuotaFooter, ResourcePanel, UsagePanel } from "./DockPanels";
 import { CrewPanel } from "./CrewPanel";
+import { ProviderPriority } from "./ProviderPriority";
 import { openUrl } from "@tauri-apps/plugin-opener";
 
 const CLI_LABEL: Record<CliId, string> = {
@@ -43,7 +45,6 @@ const WINDOW_LABEL: Record<string, string> = {
 };
 
 const STORAGE_DIR = "agentdock.projectDir";
-const STORAGE_CLI = "agentdock.cli";
 const STORAGE_CHAIN = "agentdock.chain";
 const STORAGE_ENABLED = "agentdock.enabled";
 const STORAGE_MODEL_PREFIX = "agentdock.model.";
@@ -311,11 +312,8 @@ function loadModelChoices(): Record<string, string> {
 
 function App() {
   const [statuses, setStatuses] = useState<AvailabilitySnapshot[]>([]);
-  const [recommended, setRecommended] = useState<CliId | null>(null);
   const [detailCli, setDetailCli] = useState<CliId | null>(null);
   const [rechecking, setRechecking] = useState(false);
-  const [dragging, setDragging] = useState<CliId | null>(null);
-  const [dragOver, setDragOver] = useState<CliId | null>(null);
   const [tab, setTab] = useState<"overview" | "chat" | "crew" | "settings">("overview");
   const [crewBusy, setCrewBusy] = useState(false);
   const [modelChoice, setModelChoice] = useState<Record<string, string>>(() => loadModelChoices());
@@ -324,14 +322,28 @@ function App() {
   const [convs, setConvs] = useState<Conversation[]>([]);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [projectDir, setProjectDir] = useState<string>(() => loadStored(STORAGE_DIR, ""));
-  const [cli, setCli] = useState<CliId>(() => loadStored(STORAGE_CLI, "claude") as CliId);
+  const cli: CliId = "codex";
   const [allowWrites, setAllowWrites] = useState(false);
   const [opacity, setOpacity] = useState(() => {
     const value = Number(loadStored(STORAGE_OPACITY, "1"));
     return Number.isFinite(value) ? Math.min(1, Math.max(0.55, value)) : 1;
   });
+  const [theme, setTheme] = useState(() => loadStored("agentdock.theme", "system"));
+  const [fontScale, setFontScale] = useState(() => loadStored("agentdock.fontScale", "100"));
+  const [autoHandoff, setAutoHandoff] = useState(() => loadStored("agentdock.autoHandoff", "true") === "true");
   const [input, setInput] = useState("");
   const [error, setError] = useState("");
+  const [chatMenuOpen, setChatMenuOpen] = useState(false);
+  const [projectTree, setProjectTree] = useState<{ name: string; isDir: boolean; children?: { name: string; isDir: boolean; children?: any[] }[] }[]>([]);
+  const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
+  const [sidebarWidth, setSidebarWidth] = useState(230);
+  const [chatWidth, setChatWidth] = useState(390);
+  const [selectedFile, setSelectedFile] = useState<string | null>(null);
+  const [fileContent, setFileContent] = useState<string | null>(null);
+  const [fileHtml, setFileHtml] = useState<string | null>(null);
+  const [fileDirty, setFileDirty] = useState(false);
+  const [fileSaving, setFileSaving] = useState(false);
+  const [editingFile, setEditingFile] = useState(false);
   const runMapRef = useRef<Record<number, number>>({});
   const pendingRef = useRef<Record<number, RunEvent[]>>({});
   const endRef = useRef<HTMLDivElement | null>(null);
@@ -381,11 +393,7 @@ function App() {
     };
   }, []);
 
-  useEffect(() => {
-    invoke<CliId | null>("pick_cli")
-      .then(setRecommended)
-      .catch(() => setRecommended(null));
-  }, [statuses]);
+
 
   // 창이 포커스를 되찾으면 재검사 — 터미널에서 로그아웃·로그인한 결과가 바로 반영되도록 (30초 이내 반복은 생략)
   useEffect(() => {
@@ -402,13 +410,55 @@ function App() {
   }, []);
 
   useEffect(() => {
-    store(STORAGE_CLI, cli);
     void loadModels(cli, false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cli]);
 
   const current = convs.find((c) => c.id === selectedId) ?? null;
   const running = current?.state === "running";
+
+  useEffect(() => {
+    if (!projectDir) { setProjectTree([]); return; }
+    invoke<{ name: string; isDir: boolean; children?: any[] }[]>("list_project_tree", { projectDir })
+      .then(rows => { setProjectTree(rows); setExpandedFolders(new Set()); }).catch(() => setProjectTree([]));
+  }, [projectDir]);
+
+  function renderTree(rows: { name: string; isDir: boolean; children?: any[] }[], prefix = "", depth = 0): ReactElement[] {
+    return rows.flatMap(entry => {
+      const key = `${prefix}/${entry.name}`;
+      const open = expandedFolders.has(key);
+      const line = <button className="sidebar-file" style={{ paddingLeft: `${7 + depth * 12}px` }} key={key} onClick={() => {
+        if (entry.isDir) setExpandedFolders(prev => { const next = new Set(prev); if (next.has(key)) next.delete(key); else next.add(key); return next; });
+        else if (projectDir) { const relativePath = key.slice(1); setSelectedFile(relativePath); setFileContent(null); setFileHtml(null); setFileDirty(false); setEditingFile(false); invoke<string>("read_project_file", { projectDir, relativePath }).then(setFileContent).catch(e => setFileContent(String(e))); invoke<string>("highlight_project_file", { projectDir, relativePath }).then(setFileHtml).catch(() => {}); }
+      }}>
+        <span className="tree-chevron">{entry.isDir ? (open ? "⌄" : "›") : ""}</span><span className={entry.isDir ? "tree-folder" : "tree-file"}>{entry.isDir ? "▱" : "·"}</span><span>{entry.name}</span>
+      </button>;
+      return open && entry.children?.length ? [line, ...renderTree(entry.children, key, depth + 1)] : [line];
+    });
+  }
+
+  async function saveFile() {
+    if (!projectDir || !selectedFile || fileContent == null || !fileDirty) return;
+    setFileSaving(true);
+    try { await invoke("write_project_file", { projectDir, relativePath: selectedFile, content: fileContent }); setFileDirty(false); invoke<string>("highlight_project_file", { projectDir, relativePath: selectedFile }).then(setFileHtml).catch(() => {}); }
+    catch (e) { setError(String(e)); }
+    finally { setFileSaving(false); }
+  }
+
+  function startSidebarResize(e: React.MouseEvent) {
+    e.preventDefault();
+    const start = e.clientX; const initial = sidebarWidth;
+    const move = (event: MouseEvent) => setSidebarWidth(Math.max(170, Math.min(420, initial + event.clientX - start)));
+    const stop = () => { window.removeEventListener("mousemove", move); window.removeEventListener("mouseup", stop); };
+    window.addEventListener("mousemove", move); window.addEventListener("mouseup", stop);
+  }
+  function startChatResize(e: React.MouseEvent) {
+    e.preventDefault();
+    const start = e.clientX; const initial = chatWidth;
+    const move = (event: MouseEvent) => setChatWidth(Math.max(300, Math.min(760, initial + start - event.clientX)));
+    const stop = () => { window.removeEventListener("mousemove", move); window.removeEventListener("mouseup", stop); };
+    window.addEventListener("mousemove", move); window.addEventListener("mouseup", stop);
+  }
   const awaiting = current ? pendingApprovals(current) > 0 : false;
   const pendingTotal = convs.reduce((n, c) => n + pendingApprovals(c), 0);
   const detail = detailCli ? (statuses.find((s) => s.cli === detailCli) ?? null) : null;
@@ -421,10 +471,13 @@ function App() {
     if (!force && modelOptions[target]) return;
     setModelLoading((m) => ({ ...m, [target]: true }));
     try {
-      const list = await invoke<ModelOption[]>("list_models", { cli: target });
+      const rows = await invoke<{ id: string; namespaced?: string; label?: string; display_name?: string; disabled?: boolean }[]>("get_ocx_models");
+      const list: ModelOption[] = rows.filter(m => !m.disabled && (m.namespaced || m.id)).map(m => ({
+        id: m.namespaced || m.id, label: m.label || m.display_name || m.namespaced || m.id, is_default: false,
+      }));
       setModelOptions((m) => ({ ...m, [target]: list }));
     } catch (e) {
-      setError(`${CLI_LABEL[target]} 모델 목록: ${String(e)}`);
+      setError(`Opencodex 모델 목록: ${String(e)}`);
     } finally {
       setModelLoading((m) => ({ ...m, [target]: false }));
     }
@@ -453,36 +506,24 @@ function App() {
     }
   }
 
-  /** 상단 카드 드래그 결과를 라우팅 체인으로 반영한다. 상태바·추천도 백엔드 응답 순서를 따른다. */
-  async function applyChain(chain: CliId[]) {
-    try {
-      const snaps = await invoke<AvailabilitySnapshot[]>("set_routing_chain", { chain });
-      setStatuses(snaps);
-      store(STORAGE_CHAIN, snaps.map((s) => s.cli).join(","));
-    } catch (e) {
-      setError(String(e));
-    }
+  async function copyChat(value: string) {
+    try { await navigator.clipboard.writeText(value); setChatMenuOpen(false); }
+    catch (e) { setError(`복사 실패: ${String(e)}`); }
   }
 
-  async function applyEnabled(enabled: CliId[]) {
-    try {
-      const snaps = await invoke<AvailabilitySnapshot[]>("set_enabled_clis", { enabled });
-      setStatuses(snaps);
-      store(STORAGE_ENABLED, enabled.join(","));
-      if (!enabled.includes(cli)) setCli(enabled[0]);
-    } catch (e) {
-      setError(String(e));
-    }
+  function renameCurrent() {
+    if (!current) return;
+    const next = window.prompt("대화 이름", current.title)?.trim();
+    if (!next) return;
+    setConvs(prev => prev.map(c => c.id === current.id ? { ...c, title: next.slice(0, 80) } : c));
+    setChatMenuOpen(false);
   }
 
-  function dropOn(target: CliId) {
-    const from = dragging;
-    setDragging(null);
-    setDragOver(null);
-    if (!from || from === target) return;
-    const order = allOrder.filter((c) => c !== from);
-    order.splice(allOrder.indexOf(target), 0, from);
-    void applyChain(order);
+  function archiveCurrent() {
+    if (!current || !window.confirm("이 대화를 보관할까요?")) return;
+    setConvs(prev => prev.filter(c => c.id !== current.id));
+    setSelectedId(null);
+    setChatMenuOpen(false);
   }
 
   async function recheck(target: CliId | null) {
@@ -497,24 +538,14 @@ function App() {
     }
   }
 
-  /** 대화 중 CLI 전환: 다음 메시지부터 새 CLI가 받고, 그 CLI가 모르는 항목은 handoff 문단으로 함께 넘어간다 */
-  function switchConversationCli(convId: number, target: CliId) {
-    setConvs((prev) =>
-      prev.map((c) => {
-        if (c.id !== convId || c.cli === target || c.state === "running") return c;
-        const sess = sessionOf(c, target);
-        const pending = c.items.length - sess.syncedUpTo;
-        const note = sess.sessionId
-          ? `→ ${CLI_LABEL[target]}(기존 세션)으로 전환. 그사이 대화 ${pending}개 항목을 다음 메시지에 함께 넘깁니다.`
-          : `→ ${CLI_LABEL[target]}로 전환. 다음 메시지에 지금까지의 대화 ${pending}개 항목을 함께 넘깁니다.`;
-        return { ...c, cli: target, items: [...c.items, item("system", note, null, target)] };
-      }),
-    );
-  }
-
+  /** 선택한 모델로 Opencodex에 새 메시지를 보낸다. */
   async function send() {
     const text = input.trim();
     if (!text) return;
+    if (!modelOptions[cli]?.some(m => m.id === modelChoice[cli])) {
+      setError("사용 가능한 모델을 선택하세요. 목록이 없으면 새로고침해 주세요.");
+      return;
+    }
     if (!projectDir) {
       setError("프로젝트 폴더를 먼저 선택하세요.");
       return;
@@ -554,11 +585,11 @@ function App() {
     setInput("");
 
     try {
-      const model = modelChoice[target] || null;
-      const args = { cli: target, request, projectDir: conv.projectDir, allowWrites: conv.allowWrites, model };
-      const runId = sess.sessionId
-        ? await invoke<number>("continue_job", { ...args, sessionId: sess.sessionId })
-        : await invoke<number>("start_job", args);
+      const model = modelChoice[target];
+      const runId = await invoke<number>("send_chat", {
+        request, projectDir: conv.projectDir, allowWrites: conv.allowWrites,
+        model, sessionId: sess.sessionId,
+      });
       runMapRef.current[runId] = convId;
       setConvs((prev) => prev.map((c) => (c.id === convId ? { ...c, activeRunId: runId } : c)));
       const queued = pendingRef.current[runId] ?? [];
@@ -644,19 +675,21 @@ function App() {
         <select
           value={modelChoice[target] ?? ""}
           onChange={(e) => chooseModel(target, e.currentTarget.value)}
-          title={`${CLI_LABEL[target]} 모델 (비우면 CLI 기본값)`}
+          title="Opencodex에 연결된 모델"
+          aria-label="대화 모델"
+          disabled={running || loading}
         >
-          <option value="">기본{options.find((m) => m.is_default) ? ` (${options.find((m) => m.is_default)?.label.split(" — ")[0]})` : ""}</option>
+          <option value="" disabled>{loading ? "모델 불러오는 중…" : "모델 선택"}</option>
           {options.map((m) => (
             <option key={m.id} value={m.id}>
               {compact ? m.label.split(" — ")[0] : m.label}
             </option>
           ))}
           {modelChoice[target] && !options.some((m) => m.id === modelChoice[target]) && (
-            <option value={modelChoice[target]}>{modelChoice[target]}</option>
+            <option value={modelChoice[target]} disabled>{modelChoice[target]} (사용 가능 여부 확인 필요)</option>
           )}
         </select>
-        <button className="small" onClick={() => void loadModels(target, true)} disabled={loading} title="모델 목록 다시 불러오기">
+        <button className="small" onClick={() => void loadModels(target, true)} disabled={running || loading} title="모델 목록 다시 불러오기">
           {loading ? "…" : "↻"}
         </button>
       </span>
@@ -669,23 +702,32 @@ function App() {
   const [refresh, setRefresh] = useState(0);
   const telemetry = useTelemetry(usageRange, refresh);
   const online = !!telemetry.health.data && !telemetry.health.error;
-  const windowSizes = useRef({ compact: { width: 380, height: 188 }, expanded: { width: 520, height: 740 } });
+  const windowSizes = useRef<Record<string, { width: number; height: number }>>({
+    compact: { width: 380, height: 188 }, quota: { width: 420, height: 520 }, overview: { width: 820, height: 680 },
+    chat: { width: 1280, height: 820 }, settings: { width: 760, height: 720 }, crew: { width: 900, height: 780 },
+  });
   const previousWindowMode = useRef("compact");
-  const windowMode = isExpanded ? "expanded" : quotaActive ? "quota" : "compact";
+  const windowMode = isExpanded ? `${tab}${quotaActive ? ":quota" : ""}` : quotaActive ? "quota" : "compact";
 
   useEffect(() => {
     const previous = previousWindowMode.current;
     if (previous === windowMode) return;
-    if (previous === "compact" || previous === "expanded") {
+    if (previous === "compact" || previous.includes(":" ) === false) {
       windowSizes.current[previous] = { width: window.innerWidth, height: window.innerHeight };
     }
     previousWindowMode.current = windowMode;
-    const base = windowSizes.current[windowMode === "expanded" ? "expanded" : "compact"];
-    const size = { width: base.width, height: windowMode === "quota" ? Math.max(base.height, 440) : base.height };
+    const baseKey = windowMode.split(":")[0];
+    const base = windowSizes.current[baseKey] ?? windowSizes.current.compact;
+    const size = { width: base.width, height: windowMode.endsWith(":quota") ? Math.max(base.height, 520) : base.height };
     let cancelled = false;
     void (async () => {
       const { getCurrentWindow, LogicalSize } = await import("@tauri-apps/api/window");
-      if (!cancelled) await getCurrentWindow().setSize(new LogicalSize(size.width, size.height));
+      if (!cancelled) {
+        const window = getCurrentWindow();
+        const position = await window.outerPosition();
+        await window.setSize(new LogicalSize(size.width, size.height));
+        try { await window.setPosition(position); } catch { /* 일부 Windows 환경에서는 위치 복원을 거부할 수 있음 */ }
+      }
     })().catch(e => setError(`창 크기 변경 실패: ${String(e)}`));
     return () => { cancelled = true; };
   }, [windowMode]);
@@ -719,7 +761,7 @@ function App() {
   };
 
   return (
-    <div className={`widget-container ${isExpanded ? "expanded" : "collapsed"} ${quotaActive ? "quota-open" : ""}`} style={{ opacity }}>
+    <div className={`widget-container ${isExpanded ? "expanded" : "collapsed"} ${quotaActive ? "quota-open" : ""} theme-${theme}`} style={{ opacity, fontSize: `${fontScale}%` }}>
       <div className="widget-header" onMouseDown={startDrag}>
         <span className="brand-mark" aria-hidden="true">a<span>·</span></span>
         <span className="widget-title">Agent Dock</span>
@@ -738,100 +780,48 @@ function App() {
       <div className="firstmate-view" hidden={!isExpanded || tab !== "crew"}><CrewPanel projectDir={projectDir} onBusy={setCrewBusy} /></div>
       {isExpanded && (
         <>
-        <nav className="dock-tabs" aria-label="위젯 메뉴">{([['overview', '개요'], ['chat', '대화'], ['settings', '설정']] as const).map(([key, label]) => <button key={key} className={tab === key ? 'active' : ''} aria-current={tab === key ? 'page' : undefined} onClick={() => { setTab(key); setQuotaActive(null); }}>{label}{key === 'chat' && pendingTotal > 0 && <span className="count-badge">{pendingTotal}</span>}</button>)}<button className={tab === "crew" ? "active" : ""} onClick={() => { setTab("crew"); setQuotaActive(null); }}>Crew</button><button className="refresh-button" onClick={() => setRefresh(v => v + 1)} title="연결·사용량·한도 새로고침" aria-label="새로고침">↻</button></nav>
+        <nav className="dock-tabs" aria-label="위젯 메뉴">{([['overview', '개요'], ['chat', '대화'], ['settings', '설정']] as const).map(([key, label]) => <button key={key} className={tab === key ? 'active' : ''} aria-current={tab === key ? 'page' : undefined} onClick={() => { setTab(key); setQuotaActive(null); if (key === "chat") setIsExpanded(true); }}>{label}{key === 'chat' && pendingTotal > 0 && <span className="count-badge">{pendingTotal}</span>}</button>)}<button className={tab === "crew" ? "active" : ""} onClick={() => { setTab("crew"); setQuotaActive(null); }}>Crew</button><button className="refresh-button" onClick={() => setRefresh(v => v + 1)} title="연결·사용량·한도 새로고침" aria-label="새로고침">↻</button></nav>
         <div className={`app tab-${tab}`}>
-          {tab === "overview" && <><ResourcePanel telemetry={telemetry} compact={false} /><UsagePanel telemetry={telemetry} compact={false} range={usageRange} onRange={setUsageRange} /><div className="section-heading"><h2>AI 우선순위</h2><span className="subtle">드래그로 선호 순서 변경</span></div></>}
-          <header className="cli-row" title="카드를 드래그해 선호 AI 순서를 바꿉니다">
-        {cliOrder.map((id) => {
-          const s = statuses.find((x) => x.cli === id);
-          const state = s?.state ?? "unknown";
-          const rank = allOrder.indexOf(id) + 1;
-          return (
-            <div
-              key={id}
-              className={`cli-card state-${state}${id === cli ? " current" : ""}${dragging === id ? " dragging" : ""}${dragOver === id && dragging !== id ? " drag-over" : ""}`}
-              title={`선호 ${rank}순위 · ${STATE_LABEL[state]} · 드래그해서 AI 순서를 변경`}
-              draggable
-              role="button"
-              tabIndex={0}
-              onClick={() => setDetailCli(v => v === id ? null : id)}
-              onKeyDown={e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setDetailCli(v => v === id ? null : id); } }}
-              onDragStart={(e) => {
-                e.dataTransfer.effectAllowed = "move";
-                e.dataTransfer.setData("text/plain", id);
-                setDragging(id);
-              }}
-              onDragOver={(e) => {
-                e.preventDefault();
-                e.dataTransfer.dropEffect = "move";
-                if (dragOver !== id) setDragOver(id);
-              }}
-              onDragLeave={() => setDragOver((v) => (v === id ? null : v))}
-              onDrop={(e) => {
-                e.preventDefault();
-                dropOn(id);
-              }}
-              onDragEnd={() => {
-                setDragging(null);
-                setDragOver(null);
-              }}
-            >
-              {/* 상단 카드는 사용 가능 여부만 — 사용률·근거는 하단 상태바와 상세 패널에서 (2026-09-04 사용자 요청) */}
-              <span className="prio">{rank}</span>
-              <span className="dot" />
-              <span className="cli-name">{CLI_LABEL[id]}</span>
-              <span className="cli-state">{STATE_LABEL[state]}</span>
-            </div>
-          );
-        })}
-        <button className="small settings-btn" onClick={() => setTab("settings")} title="AI 모델 설정: 사용 여부·로그인·모델">
-          ⚙ AI 모델 설정
-        </button>
-        {pendingTotal > 0 && <span className="perm-badge">승인 대기 {pendingTotal}</span>}
-      </header>
+          {tab === "overview" && <><ResourcePanel telemetry={telemetry} compact={false} /><UsagePanel telemetry={telemetry} compact={false} range={usageRange} onRange={setUsageRange} /></>}
 
       <main className="main">
-        <section className="panel queue">
-          <div className="panel-head">
-            <h2>대화</h2>
-            <button className="small" onClick={() => setSelectedId(null)}>
-              ＋ 새 대화
-            </button>
+        <section className="panel queue chat-sidebar" style={{ flexBasis: sidebarWidth, width: sidebarWidth }}>
+          <div className="sidebar-title"><span>탐색기</span></div>
+          <button className="sidebar-folder" onClick={() => void pickFolder()} title={projectDir || "프로젝트 폴더 선택"}>📁 <strong>{projectDir || "프로젝트 폴더 선택"}</strong></button>
+          <div className="sidebar-files" aria-label="프로젝트 파일 탐색기">
+            {renderTree(projectTree)}
+            {!projectDir && <p className="sidebar-empty">폴더를 선택하세요</p>}
           </div>
-          {convs.length === 0 && <p className="empty">아래에 메시지를 입력하면 새 대화가 시작됩니다.</p>}
-          <ul>
-            {convs.map((c) => (
-              <li
-                key={c.id}
-                className={c.id === selectedId ? "selected" : ""}
-                onClick={() => {
-                  setSelectedId(c.id);
-                  setCli(c.cli);
-                }}
-              >
-                <span className="job-title">
-                  [{c.cli}] {c.title}
-                </span>
-                <span className={`job-status js-${c.state === "running" ? "running" : c.state === "failed" ? "failed" : "queued"}`}>
-                  {c.state === "running" ? "실행 중" : c.state === "failed" ? "실패" : "대기"}
-                </span>
-              </li>
-            ))}
-          </ul>
         </section>
 
-        <section className="panel chat">
+        <div className="sidebar-resize-handle" onMouseDown={startSidebarResize} title="탐색기 너비 조절" />
+
+
+        <section className="panel code-preview">
+          <div className="code-tab"><span>{selectedFile ? `◇ ${selectedFile.split(/[\\/]/).pop()}${fileDirty ? " ●" : ""}` : "파일 미리보기"}</span><div>{selectedFile && <button className="small" onClick={() => setEditingFile(v => !v)}>{editingFile ? "미리보기" : "편집"}</button>}{editingFile && <button className="small" onClick={() => void saveFile()} disabled={!fileDirty || fileSaving}>{fileSaving ? "저장 중…" : "저장"}</button>}{selectedFile && <button className="icon-button" onClick={() => { setSelectedFile(null); setFileContent(null); setFileHtml(null); }} aria-label="파일 미리보기 닫기">×</button>}</div></div>
+          {selectedFile && editingFile ? <textarea className="code-editor" value={fileContent ?? ""} onChange={e => { setFileContent(e.currentTarget.value); setFileDirty(true); }} onKeyDown={e => { if ((e.ctrlKey || e.metaKey) && e.key === "s") { e.preventDefault(); void saveFile(); } }} spellCheck={false} placeholder="파일을 불러오는 중…" /> : selectedFile && fileHtml ? <div className="code-highlight" dangerouslySetInnerHTML={{ __html: fileHtml }} /> : <pre>{selectedFile ? (fileContent ?? "파일을 불러오는 중…") : "탐색기에서 파일을 선택하면 여기에 표시됩니다."}</pre>}
+        </section>
+
+        <div className="chat-resize-handle" onMouseDown={startChatResize} title="대화창 너비 조절" />
+        <section className="panel chat" style={{ flexBasis: chatWidth, width: chatWidth }}>
+          <div className="chat-session-bar">
+            <button className="chat-icon" aria-label="최근 대화 불러오기" title="최근 대화" onClick={() => { const latest = convs[0]; if (latest) setSelectedId(latest.id); }}>↶</button>
+            <button className="chat-icon" aria-label="새 대화" title="새 대화" onClick={() => setSelectedId(null)}>✎</button>
+            <div className="chat-menu-wrap">
+              <button className="chat-icon" aria-label="대화 추가 메뉴" aria-expanded={chatMenuOpen} title="추가 메뉴" onClick={() => setChatMenuOpen(v => !v)}>···</button>
+              {chatMenuOpen && <div className="chat-menu" role="menu">
+                <button onClick={renameCurrent} disabled={!current}>✎ 이름 변경</button><button onClick={archiveCurrent} disabled={!current}>▣ 보관</button><button onClick={() => void copyChat(current?.items.map(i => i.text).join("\n\n") ?? "")} disabled={!current}>↥ 공유</button><hr /><button onClick={() => void copyChat(current?.projectDir ?? projectDir)} disabled={!current && !projectDir}>▣ 작업 중인 디렉터리 복사</button><button onClick={() => void copyChat(`agent-dock://conversation/${current?.id ?? "new"}`)}>▣ 딥링크 복사</button><button onClick={() => void copyChat(current?.items.map(i => `**${i.role}**\n${i.text}`).join("\n\n") ?? "")} disabled={!current}>▣ Markdown으로 복사</button>
+              </div>}
+            </div>
+          </div>
           {current ? (
             <p className="run-meta">
-              [{current.cli}] {current.projectDir}
-              {sessionOf(current, current.cli).sessionId
-                ? ` · 세션 ${sessionOf(current, current.cli).sessionId!.slice(0, 8)}…`
-                : " · 새 세션"}
+              {current.projectDir}
               {current.allowWrites ? " · 쓰기 허용" : " · 읽기 전용"} · 모델 {modelLabel(current.cli)}
             </p>
           ) : (
             <p className="run-meta">
-              새 대화 · CLI {cli} · {projectDir || "폴더 미선택"} · {allowWrites ? "쓰기 허용" : "읽기 전용"} · 모델 {modelLabel(cli)}
+              새 대화 · {projectDir || "폴더 미선택"} · {allowWrites ? "쓰기 허용" : "읽기 전용"}
             </p>
           )}
           <div className="transcript">
@@ -847,7 +837,7 @@ function App() {
                 <div className="msg-text">{awaiting ? "승인 대기 중 — 위 요청에 답해 주세요" : "응답 대기 중"}</div>
               </div>
             )}
-            {!current && <p className="empty">메시지를 입력하면 위 설정으로 새 대화가 시작됩니다.</p>}
+            {!current && <p className="empty">모델과 프로젝트 폴더를 선택하고 대화를 시작하세요.</p>}
             <div ref={endRef} />
           </div>
           <div className="composer">
@@ -864,7 +854,7 @@ function App() {
               rows={3}
               disabled={running}
             />
-            <button onClick={() => void send()} disabled={running || !input.trim()}>
+            <button onClick={() => void send()} disabled={running || !input.trim() || !modelOptions[cli]?.some(m => m.id === modelChoice[cli])}>
               보내기
             </button>
           </div>
@@ -874,33 +864,12 @@ function App() {
 
       <div className="toolbar">
         <div className="settings">
-          <button className="folder-btn" onClick={() => void pickFolder()} title="프로젝트 폴더 선택 (새 대화에 적용)">
-            📁 {projectDir || "프로젝트 폴더 선택"}
-          </button>
-          <select
-            value={cli}
-            onChange={(e) => {
-              const next = e.currentTarget.value as CliId;
-              setCli(next);
-              if (current) switchConversationCli(current.id, next);
-            }}
-            title={current ? "현재 대화를 이 CLI로 전환 (이전 대화를 함께 넘김)" : "새 대화에 쓸 CLI"}
-            disabled={running}
-          >
-            {cliOrder.map((id) => (
-              <option key={id} value={id}>
-                {CLI_LABEL[id]}
-              </option>
-            ))}
-          </select>
-          {renderModelSelect(cli, true)}
+          <label className="chat-model-control"><span>모델</span>{renderModelSelect(cli, false)}</label>
           <label className="check">
             <input type="checkbox" checked={current?.allowWrites ?? allowWrites} disabled={!!current} onChange={(e) => setAllowWrites(e.currentTarget.checked)} />
             파일 쓰기 허용
           </label>
-          <span className="routing" title="현재 가용한 선호 AI와 한도 상태">
-            우선 AI: {recommended ? CLI_LABEL[recommended] : "없음"}
-          </span>
+
         </div>
         <div className="actions">
           <button onClick={() => void stop()} disabled={!running}>
@@ -986,54 +955,23 @@ function App() {
             <div className="panel-head">
               <h2>연결 및 설정</h2>
               <div className="actions">
-                <button className="small" onClick={() => void recheck(null)} disabled={rechecking}>
-                  {rechecking ? "재검사 중…" : "전체 재검사"}
+                <button className="small" onClick={() => setRefresh(value => value + 1)}>
+                  연결 새로고침
                 </button>
               </div>
             </div>
             <div className="connection-card"><div><strong>Opencodex</strong><p className="muted">{telemetry.health.data?.url ?? "로컬 서버 연결 대기"}</p><small>{telemetry.health.data?.version ? `v${telemetry.health.data.version}` : "서버를 시작하면 자동 연결됩니다"}</small></div><button onClick={openDashboard}>계정 관리 ↗</button></div>
-            <p className="muted settings-help">AI 제공자·계정·OAuth는 Opencodex에서 관리합니다. 여기서는 연결 상태와 모델 우선순위만 조정합니다.</p>
-            <div className="registry-cards">
-                {allOrder.map((id, i) => {
-                  const s = statuses.find((x) => x.cli === id);
-                  const enabled = s?.enabled ?? true;
-                  const state = s?.state ?? "unknown";
-                  return (
-                    <article key={id} className={`registry-card ${enabled ? "" : "disabled"}`}>
-                      <div className="registry-card-head"><span className="prio">{i + 1}</span><strong>{CLI_LABEL[id]}</strong><span className={`sb-state state-${state}`}><span className="dot" />{STATE_LABEL[state]}</span><label className="enable-switch">
-                        <span>사용</span>
-                        <input
-                          type="checkbox"
-                          aria-label={`${CLI_LABEL[id]} 사용`}
-                          checked={enabled}
-                          onChange={(e) => {
-                            const next = e.currentTarget.checked
-                              ? [...cliOrder, id].filter((c, idx, arr) => arr.indexOf(c) === idx)
-                              : cliOrder.filter((c) => c !== id);
-                            const ordered = allOrder.filter((c) => next.includes(c));
-                            if (ordered.length === 0) {
-                              setError("최소 한 개의 CLI는 켜 두어야 합니다.");
-                              return;
-                            }
-                            void applyEnabled(ordered);
-                          }}
-                        />
-                      </label></div>
-                      <p className="registry-account">{s ? accountLine(s) : "확인 중"}</p>
-                      <div className="registry-controls">{enabled && renderModelSelect(id, false)}</div>
-                      {s?.last_error && <p className="inline-error">{s.last_error}</p>}
-                    </article>
-                  );
-                })}
-            </div>
-            <p className="settings-help muted">CLI 전환은 대화 탭에서 직접 선택합니다. 자동 전환·AFK는 아직 지원하지 않습니다.</p>
+            <p className="muted settings-help">AI 제공자·계정·로그인은 Opencodex에서 관리합니다. 계정 관리 버튼으로 대시보드를 열 수 있습니다.</p>
+            <div className="preference-card"><h3>화면 설정</h3><div className="theme-buttons" role="group" aria-label="테마"><button className={theme === "system" ? "active" : ""} onClick={() => { setTheme("system"); store("agentdock.theme", "system"); }}>시스템</button><button className={theme === "dark" ? "active" : ""} onClick={() => { setTheme("dark"); store("agentdock.theme", "dark"); }}>어두움</button><button className={theme === "light" ? "active" : ""} onClick={() => { setTheme("light"); store("agentdock.theme", "light"); }}>밝음</button></div><label className="font-size-setting"><span>글자 크기</span><div className="theme-buttons" role="group" aria-label="글자 크기"><button className={fontScale === "85" ? "active" : ""} onClick={() => { setFontScale("85"); store("agentdock.fontScale", "85"); }}>작게</button><button className={fontScale === "100" ? "active" : ""} onClick={() => { setFontScale("100"); store("agentdock.fontScale", "100"); }}>기본</button><button className={fontScale === "115" ? "active" : ""} onClick={() => { setFontScale("115"); store("agentdock.fontScale", "115"); }}>크게</button></div></label></div>
+            <div className="preference-card handoff-setting"><div><h3>한도 도달 시 자동 전환</h3><p className="muted">현재 제공자의 계정 풀이 모두 소진되면 다음 제공자로 넘깁니다.</p></div><button className={`toggle-switch ${autoHandoff ? "on" : ""}`} aria-pressed={autoHandoff} onClick={() => { const next = !autoHandoff; setAutoHandoff(next); store("agentdock.autoHandoff", String(next)); }}>{autoHandoff ? "켜짐" : "꺼짐"}</button></div>
+            {autoHandoff && <ProviderPriority telemetry={telemetry} />}
         </section>
       )}
         </div>
         </>
       )}
       {error && (!isExpanded || tab !== "chat") && <div className="dock-error" role="alert" title={error}>{error}<button className="icon-button" aria-label="오류 닫기" onClick={() => setError("")}>×</button></div>}
-      <QuotaFooter telemetry={telemetry} active={quotaActive} onActive={setQuotaActive} compact={!isExpanded} />
+      <QuotaFooter telemetry={telemetry} active={quotaActive} onActive={setQuotaActive} compact={!isExpanded} onRefresh={() => setRefresh(v => v + 1)} />
       <div className="resize-grip" title="드래그해서 창 크기 조절" onMouseDown={e => {
         if (e.button !== 0) return;
         e.preventDefault();

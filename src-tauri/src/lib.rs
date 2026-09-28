@@ -6,6 +6,7 @@ mod db;
 mod models;
 mod runner;
 mod resources;
+mod openrouter_quota;
 mod scheduler;
 
 use std::collections::HashMap;
@@ -432,6 +433,31 @@ async fn start_job(
     spawn_run(app, state.inner(), cli, adapter, spec, follow_up).await
 }
 
+/// Model-only chat uses the same OCX endpoint for new and resumed conversations.
+#[tauri::command]
+async fn send_chat(
+    app: AppHandle,
+    state: tauri::State<'_, AppState>,
+    session_id: Option<String>,
+    request: String,
+    project_dir: String,
+    allow_writes: bool,
+    model: String,
+) -> Result<u64, String> {
+    if request.trim().is_empty() || model.trim().is_empty() {
+        return Err("모델을 선택하고 메시지를 입력하세요".into());
+    }
+    let adapter = adapter_for(CliId::Codex)?;
+    let job = make_job(request, project_dir, allow_writes, Some(model));
+    let mut spec = match session_id.as_deref() {
+        Some(id) => adapter.build_resume_command(&job, id).ok_or("세션 재개를 지원하지 않습니다")?,
+        None => adapter.build_command(&job),
+    };
+    spec.args.extend(["-c".into(), format!("openai_base_url=\"{}/v1\"", ocx_base_url()?)]);
+    let follow_up = adapter.stdin_follow_up(&job, session_id.as_deref());
+    spawn_run(app, state.inner(), CliId::Codex, adapter, spec, follow_up).await
+}
+
 /// Firstmate uses the existing approval and streaming pipeline, with OCX routing pinned
 /// for this process only. User-wide Codex configuration is left untouched.
 #[tauri::command]
@@ -856,10 +882,23 @@ async fn ocx_request(path: &str, authenticated: bool, timeout: &str) -> Result<S
 }
 
 async fn ocx_request_body(path: &str, authenticated: bool, timeout: &str, body: Option<String>) -> Result<String, String> {
+    let token = if authenticated { read_admin_token()? } else { String::new() };
+    bearer_request(&format!("{}{path}", ocx_base_url()?), token, timeout, body).await
+}
+
+async fn ocx_post(path: &str, body: String, timeout: &str) -> Result<String, String> {
+    let token = read_admin_token()?;
+    bearer_request_method(&format!("{}{path}", ocx_base_url()?), token, timeout, Some(body), "POST").await
+}
+
+async fn bearer_request(url: &str, token: String, timeout: &str, body: Option<String>) -> Result<String, String> {
+    bearer_request_method(url, token, timeout, body, "GET").await
+}
+
+async fn bearer_request_method(url: &str, token: String, timeout: &str, body: Option<String>, method: &str) -> Result<String, String> {
     use std::process::Stdio;
     use tokio::io::AsyncWriteExt;
 
-    let token = if authenticated { read_admin_token()? } else { String::new() };
     #[cfg(windows)]
     let curl = std::path::PathBuf::from(
         std::env::var_os("SystemRoot").ok_or("Windows 시스템 경로를 찾을 수 없습니다")?,
@@ -870,7 +909,7 @@ async fn ocx_request_body(path: &str, authenticated: bool, timeout: &str, body: 
 
     let mut command = tokio::process::Command::new(curl);
     if let Some(body) = body {
-        command.args(["--request", "PUT", "--header", "Content-Type: application/json", "--data-raw", &body]);
+        command.args(["--request", method, "--header", "Content-Type: application/json", "--data-raw", &body]);
     }
     // Do not flash a console window on every poll.
     #[cfg(windows)]
@@ -891,7 +930,7 @@ async fn ocx_request_body(path: &str, authenticated: bool, timeout: &str, body: 
             "--write-out",
             "\n%{http_code}",
         ])
-        .arg(format!("{}{path}", ocx_base_url()?))
+        .arg(url)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -900,7 +939,8 @@ async fn ocx_request_body(path: &str, authenticated: bool, timeout: &str, body: 
         .map_err(|e| format!("Opencodex curl 실행 실패: {e}"))?;
     // Keep the admin token in Rust and out of process command-line arguments.
     let mut stdin = child.stdin.take().ok_or("curl 입력을 열 수 없습니다")?;
-    let header = if authenticated { format!("Authorization: Bearer {token}\n") } else { String::new() };
+    if token.contains(['\r', '\n']) { return Err("인증 키 형식 오류".into()); }
+    let header = if !token.is_empty() { format!("Authorization: Bearer {token}\n") } else { String::new() };
     stdin
         .write_all(header.as_bytes())
         .await
@@ -950,13 +990,121 @@ async fn get_ocx_quotas() -> Result<serde_json::Value, String> {
         .filter(|p| p.get("disabled").and_then(|v| v.as_bool()) != Some(true))
         .filter_map(|p| p.get("name").and_then(|v| v.as_str())).collect();
     if !quota["reports"].is_array() { return Err("한도 응답 형식 오류".into()); }
-    Ok(serde_json::json!({"reports": quota["reports"], "providers": names, "generatedAt": quota["generatedAt"]}))
+    let mut reports = quota["reports"].as_array().unwrap().clone();
+    let mut errors = serde_json::Map::new();
+    for provider in providers.as_array().unwrap().iter().filter(|p| names.contains(&p["name"].as_str().unwrap_or(""))) {
+        if provider["baseUrl"].as_str().map(openrouter_quota::is_openrouter).unwrap_or(false) {
+            let name = provider["name"].as_str().unwrap_or("openrouter");
+            match openrouter_quota::fetch(name).await {
+                Ok(report) => { reports.retain(|r| r["provider"] != name); reports.push(report); }
+                Err(error) => { errors.insert(name.to_owned(), serde_json::Value::String(error)); }
+            }
+        }
+    }
+    Ok(serde_json::json!({"reports": reports, "providers": names, "generatedAt": quota["generatedAt"], "providerErrors": errors}))
+}
+
+#[tauri::command]
+async fn get_ocx_providers() -> Result<serde_json::Value, String> {
+    let raw = parse_ocx_response(&ocx_request("/api/providers", true, "8").await?)?;
+    let rows = raw.as_array().ok_or("제공자 목록 형식 오류")?.iter().map(|p| serde_json::json!({
+        "name": p["name"], "label": p["label"], "disabled": p["disabled"],
+        "authMode": p["authMode"], "hasApiKey": p["hasApiKey"],
+    })).collect::<Vec<_>>();
+    Ok(serde_json::json!({ "providers": rows }))
 }
 
 /// Opencodex가 현재 노출하는 provider/model 카탈로그를 반환한다.
 #[tauri::command]
 async fn get_ocx_models() -> Result<serde_json::Value, String> {
     parse_ocx_response(&ocx_request("/api/models", true, "8").await?)
+}
+
+#[tauri::command]
+async fn get_ocx_accounts() -> Result<serde_json::Value, String> {
+    let (accounts, active) = tokio::try_join!(
+        ocx_request("/api/codex-auth/accounts", true, "30"),
+        ocx_request("/api/codex-auth/active", true, "8"),
+    )?;
+    let accounts = parse_ocx_response(&accounts)?;
+    let active = parse_ocx_response(&active)?;
+    let rows = accounts["accounts"].as_array().ok_or("계정 목록 응답 형식 오류")?;
+    // Only presentation fields cross IPC; never forward credentials or auth config.
+    let rows: Vec<_> = rows.iter().map(|row| serde_json::json!({
+        "id": row["id"], "alias": row["alias"], "email": row["email"],
+        "plan": row["plan"], "isMain": row["isMain"], "paused": row["paused"],
+        "needsReauth": row["needsReauth"], "healthSummary": row["healthSummary"],
+        "quota": row["quota"], "quotaProbeSkipped": row["quotaProbeSkipped"],
+    })).collect();
+    Ok(serde_json::json!({"accounts": rows, "activeAccountId": active["activeCodexAccountId"]}))
+}
+
+#[tauri::command]
+async fn consume_codex_reset_credit(account_id: String) -> Result<serde_json::Value, String> {
+    let account_id = account_id.trim();
+    if account_id.is_empty() || account_id.len() > 128 || account_id.contains(['\r', '\n']) {
+        return Err("계정 식별자가 올바르지 않습니다".into());
+    }
+    let response = ocx_post(
+        "/api/codex-auth/reset-credits/consume",
+        serde_json::json!({ "accountId": account_id }).to_string(),
+        "20",
+    ).await?;
+    parse_ocx_response(&response)
+}
+
+#[tauri::command]
+fn list_project_tree(project_dir: String) -> Result<Vec<serde_json::Value>, String> {
+    fn read_tree(path: &std::path::Path, depth: u8) -> Vec<serde_json::Value> {
+        let Ok(entries) = std::fs::read_dir(path) else { return vec![] };
+        let mut rows = Vec::new();
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name == "node_modules" || name == ".git" || name == "target" { continue; }
+            let is_dir = path.is_dir();
+            let children = if is_dir && depth < 4 { read_tree(&path, depth + 1) } else { vec![] };
+            rows.push(serde_json::json!({ "name": name, "isDir": is_dir, "children": children }));
+        }
+        rows.sort_by(|a, b| {
+            let ad = a["isDir"].as_bool().unwrap_or(false);
+            let bd = b["isDir"].as_bool().unwrap_or(false);
+            bd.cmp(&ad).then_with(|| a["name"].as_str().unwrap_or("").to_lowercase().cmp(&b["name"].as_str().unwrap_or("").to_lowercase()))
+        });
+        rows.into_iter().take(120).collect()
+    }
+    Ok(read_tree(std::path::Path::new(&project_dir), 0))
+}
+
+#[tauri::command]
+fn read_project_file(project_dir: String, relative_path: String) -> Result<String, String> {
+    let root = std::fs::canonicalize(&project_dir).map_err(|_| "프로젝트 폴더를 확인하세요")?;
+    let path = std::fs::canonicalize(root.join(&relative_path)).map_err(|_| "파일을 읽을 수 없습니다")?;
+    if !path.starts_with(&root) || !path.is_file() { return Err("프로젝트 폴더 안의 파일만 열 수 있습니다".into()); }
+    let metadata = std::fs::metadata(&path).map_err(|_| "파일 정보를 읽을 수 없습니다")?;
+    if metadata.len() > 1_000_000 { return Err("1MB보다 큰 파일은 미리볼 수 없습니다".into()); }
+    std::fs::read_to_string(path).map_err(|_| "텍스트 파일만 미리볼 수 있습니다".into())
+}
+
+#[tauri::command]
+fn highlight_project_file(project_dir: String, relative_path: String) -> Result<String, String> {
+    let content = read_project_file(project_dir, relative_path.clone())?;
+    let syntax_set = syntect::parsing::SyntaxSet::load_defaults_newlines();
+    let themes = syntect::highlighting::ThemeSet::load_defaults();
+    let syntax = std::path::Path::new(&relative_path).extension().and_then(|e| e.to_str())
+        .and_then(|ext| syntax_set.find_syntax_by_extension(ext))
+        .unwrap_or_else(|| syntax_set.find_syntax_plain_text());
+    syntect::html::highlighted_html_for_string(&content, &syntax_set, syntax, &themes.themes["base16-ocean.dark"])
+        .map_err(|e| format!("문법 강조 실패: {e}"))
+}
+
+#[tauri::command]
+fn write_project_file(project_dir: String, relative_path: String, content: String) -> Result<(), String> {
+    let root = std::fs::canonicalize(&project_dir).map_err(|_| "프로젝트 폴더를 확인하세요")?;
+    let path = std::fs::canonicalize(root.join(&relative_path)).map_err(|_| "파일을 찾을 수 없습니다")?;
+    if !path.starts_with(&root) || !path.is_file() { return Err("프로젝트 폴더 안의 파일만 저장할 수 있습니다".into()); }
+    if content.len() > 2_000_000 { return Err("2MB보다 큰 파일은 저장할 수 없습니다".into()); }
+    std::fs::write(path, content).map_err(|e| format!("파일 저장 실패: {e}"))
 }
 
 fn validate_crew_mode(mode: &str) -> Result<(), String> {
@@ -1107,6 +1255,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             start_job,
             start_firstmate,
+            send_chat,
             continue_job,
             cancel_run,
             get_availability,
@@ -1121,7 +1270,14 @@ pub fn run() {
             get_ocx_usage,
             get_ocx_health,
             get_ocx_quotas,
+            get_ocx_providers,
             get_ocx_models,
+            get_ocx_accounts,
+            consume_codex_reset_credit,
+            list_project_tree,
+            read_project_file,
+            highlight_project_file,
+            write_project_file,
             get_crew_mode,
             set_crew_mode,
             resources::get_system_resources

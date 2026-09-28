@@ -23,7 +23,7 @@ export interface ResourceSnapshot {
 }
 
 export interface OcxHealth { pid: number; version: string; url: string }
-export interface QuotaWindow { label: string; percent?: number; resetAt?: number; valueLabel?: string; segments?: QuotaWindow[] }
+export interface QuotaWindow { label: string; percent?: number; resetAt?: number; valueLabel?: string; remainingRequests?: number; requestLimit?: number; usedRequests?: number; segments?: QuotaWindow[] }
 export interface QuotaReport {
   provider: string;
   label: string;
@@ -33,10 +33,21 @@ export interface QuotaReport {
     fiveHourPercent?: number; fiveHourResetAt?: number;
     weeklyPercent?: number; weeklyResetAt?: number;
     monthlyPercent?: number; monthlyResetAt?: number;
+    resetCredits?: number;
     customWindows?: QuotaWindow[];
   };
 }
-export interface QuotaResponse { reports: QuotaReport[]; providers: string[]; generatedAt: number }
+export interface QuotaResponse { reports: QuotaReport[]; providers: string[]; generatedAt: number; providerErrors?: Record<string, string> }
+export interface OcxProvider { name: string; label?: string | null; disabled?: boolean; authMode?: string; hasApiKey?: boolean }
+export interface OcxAccounts {
+  activeAccountId: string | null;
+  accounts: {
+    id: string; alias?: string | null; email?: string; plan?: string | null;
+    isMain: boolean; paused: boolean; needsReauth?: boolean;
+    healthSummary?: string; quotaProbeSkipped?: boolean;
+    quota: (QuotaReport["quota"] & { updatedAt?: number }) | null;
+  }[];
+}
 
 export type CliId = "codex" | "claude" | "gemini" | "opencode" | "antigravity";
 

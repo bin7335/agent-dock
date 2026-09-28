@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import type { OcxHealth, OcxUsage, QuotaResponse, ResourceSnapshot } from "./types";
+import type { OcxAccounts, OcxHealth, OcxProvider, OcxUsage, QuotaResponse, ResourceSnapshot } from "./types";
 
 function usePoll<T>(read: () => Promise<T>, interval: number, key = "") {
   const reader = useRef(read);
@@ -36,7 +36,9 @@ export function useTelemetry(range: string, refresh: number) {
   const resources = usePoll(() => invoke<ResourceSnapshot>("get_system_resources", { ocxPid: pid }), 2000, String(pid));
   const usage = usePoll(() => invoke<OcxUsage>("get_ocx_usage", { range }), 10000, `${range}:${refresh}`);
   const quotas = usePoll(() => invoke<QuotaResponse>("get_ocx_quotas"), 60000, String(refresh));
-  return { health, resources, usage, quotas };
+  const accounts = usePoll(() => invoke<OcxAccounts>("get_ocx_accounts"), 60000, String(refresh));
+  const providers = usePoll(() => invoke<{ providers: OcxProvider[] }>("get_ocx_providers"), 60000, String(refresh));
+  return { health, resources, usage, quotas, accounts, providers };
 }
 
 export type Telemetry = ReturnType<typeof useTelemetry>;

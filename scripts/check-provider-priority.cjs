@@ -1,0 +1,15 @@
+const ts = require('typescript');
+const fs = require('node:fs');
+const vm = require('node:vm');
+const assert = require('node:assert/strict');
+const source = ts.createSourceFile('ProviderPriority.tsx', fs.readFileSync('src/ProviderPriority.tsx', 'utf8'), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+const code = source.statements.find(n => ts.isFunctionDeclaration(n) && n.name?.text === 'providerOrder').getText(source);
+const context = { exports: {} };
+vm.runInNewContext(ts.transpileModule(code, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 } }).outputText, context);
+const order = (...args) => Array.from(context.exports.providerOrder(...args));
+assert.deepEqual(order(['openai', 'google'], []), ['openai', 'google']);
+assert.deepEqual(order(['openai', 'google', 'new'], ['google', 'openai']), ['google', 'openai', 'new']);
+assert.deepEqual(order(['google'], ['openai', 'google']), ['google']);
+assert.deepEqual(order([], ['openai']), []);
+assert.deepEqual(order(['openai', 'openai'], ['openai', 'openai']), ['openai']);
+console.log('PASS provider priority: discovery, saved order, additions, removals, empty, duplicates');
