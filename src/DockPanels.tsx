@@ -43,13 +43,13 @@ export function UsagePanel({ telemetry, compact, range, onRange }: { telemetry: 
   const cost = data?.summary.estimatedCostUsd;
   const formattedCost = cost == null ? "—" : `$${cost.toFixed(4)}`;
   if (compact) return <div className="compact-usage" title={error ?? "Opencodex를 통과한 요청의 추정 비용·토큰"}>
-    <span className="subtle">{range === "all" ? "전체" : range === "7d" ? "7일" : "30일"} 사용량</span>
+    <span className="subtle">{range === "24h" ? "24시간" : range === "7d" ? "7일" : "30일"} 사용량</span>
     <strong>{formattedCost}</strong><span className="compact-tokens">{number(data?.summary.totalTokens)} <small>tokens</small></span>
     {error && <span className="warning-text">갱신 실패</span>}
   </div>;
   return <section className="dashboard-section usage-section">
     <div className="section-heading"><h2>Opencodex 사용량</h2><select aria-label="사용량 기간" value={range} onChange={e => onRange(e.target.value)}>
-      <option value="all">전체 기간</option><option value="7d">최근 7일</option><option value="30d">최근 30일</option>
+      <option value="24h">최근 24시간</option><option value="7d">최근 7일</option><option value="30d">최근 30일</option>
     </select></div>
     <div className="usage-grid">
       <div><span className="metric-label">추정 비용</span><strong className="cost-value">{formattedCost}</strong><small>USD · 청구액과 다를 수 있음</small></div>
@@ -58,6 +58,7 @@ export function UsagePanel({ telemetry, compact, range, onRange }: { telemetry: 
     <div className="usage-footnote"><span>OCX 경유 요청</span><span>{updatedAt ? `${new Date(updatedAt).toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false })} 갱신` : "연결 대기"}</span></div>
     {data && data.summary.unpricedRequests + data.summary.unmeteredRequests > 0 && <p className="data-notice">비용 산정 제외 {data.summary.unpricedRequests + data.summary.unmeteredRequests}건</p>}
     {data?.historyTruncated && <p className="data-notice">서버 기록 일부만 집계되었습니다.</p>}
+    {range === "24h" && <p className="data-notice">24시간 토큰·요청은 정확한 이동 구간입니다. 비용은 서버가 이 구간을 지원하지 않아 표시하지 않습니다.</p>}
     {error && <p className="inline-error" role="alert">{data ? "이전 수치 표시 · " : ""}{error}</p>}
   </section>;
 }

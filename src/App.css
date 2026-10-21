@@ -1106,6 +1106,7 @@ input { accent-color:var(--accent); }
 .minimized-label { display:none; }
 .widget-container.collapsed { width:100%; min-width:0; min-height:0; overflow:hidden; background:rgba(22,24,29,.98); }
 .widget-container.collapsed .app,
+.widget-container.collapsed .dock-tabs,
 .widget-container.collapsed .firstmate-view,
 .widget-container.collapsed .quota-footer,
 .widget-container.collapsed .compact-body,
@@ -1145,6 +1146,19 @@ input { accent-color:var(--accent); }
 .handoff-setting p { margin:0;line-height:1.4; }
 .toggle-switch { min-width:54px;padding:6px 9px;border:1px solid var(--line);border-radius:999px;color:var(--muted);background:transparent;font-size:10px; }
 .toggle-switch.on { color:var(--accent);border-color:var(--accent);background:#ffffff12; }
+.provider-priority { margin-top:14px;padding:12px;border:1px solid var(--line);border-radius:9px;background:#1b232c; }
+.provider-priority-list { display:flex;flex-direction:column;gap:7px; }
+.provider-priority-card { display:grid;grid-template-columns:auto minmax(0,1fr) auto;align-items:center;gap:9px;padding:9px;border:1px solid var(--line);border-radius:8px;background:#151c23;cursor:grab; }
+.provider-priority-card.dragging { opacity:.45; }
+.provider-priority-card.drag-over { border-color:var(--accent); }
+.provider-priority-main { display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:3px 8px;min-width:0; }
+.provider-priority-main strong { overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px; }
+.provider-priority-main>span { color:var(--muted);font-size:9px;white-space:nowrap; }
+.provider-priority-main select { grid-column:1/-1;width:100%;margin-top:3px;padding:5px 7px;background:#10161c;font-size:10px; }
+.provider-priority-actions { display:flex;gap:3px; }
+.provider-priority-actions button { padding:4px 6px; }
+.route-status { margin:8px 0 0;color:var(--muted);font-size:10px;overflow-wrap:anywhere; }
+.route-status.ok { color:var(--accent); }
 @media (max-width: 559px), (min-width: 560px) {
   .widget-container.collapsed .compact-body { display:grid !important; grid-template-columns:auto minmax(0,1fr); align-items:center; column-gap:12px; padding:0 10px 6px; }
   .widget-container.collapsed .resource-inline { grid-column:1; grid-row:1; gap:9px; }

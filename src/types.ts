@@ -97,6 +97,8 @@ export interface ModelOption {
   id: string;
   label: string;
   is_default: boolean;
+  provider?: string;
+  route_model?: string;
 }
 
 export type JobStatus =

@@ -863,6 +863,57 @@ fn parse_ocx_usage(response: &str) -> Result<OcxUsage, String> {
         .map_err(|e| format!("Opencodex 사용량 응답 형식 오류: {e}"))
 }
 
+fn summarize_usage_24h(contents: &str, now_ms: u64, history_truncated: bool) -> OcxUsage {
+    let since = now_ms.saturating_sub(24 * 60 * 60 * 1000);
+    let mut requests = 0;
+    let mut total_tokens: u64 = 0;
+    let mut unpriced_requests = 0;
+    let mut unmetered_requests = 0;
+    for line in contents.lines().filter(|line| !line.trim().is_empty()) {
+        let Ok(row) = serde_json::from_str::<serde_json::Value>(line) else { continue };
+        let Some(timestamp) = row.get("timestamp").and_then(|value| value.as_u64()) else { continue };
+        if timestamp < since || timestamp > now_ms { continue; }
+        requests += 1;
+        let tokens = row.get("totalTokens").and_then(|value| value.as_u64())
+            .or_else(|| row.pointer("/usage/totalTokens").and_then(|value| value.as_u64()));
+        if let Some(tokens) = tokens {
+            total_tokens = total_tokens.saturating_add(tokens);
+            // OpenCodex does not expose its per-request price calculation for a rolling 24h window.
+            unpriced_requests += 1;
+        } else {
+            unmetered_requests += 1;
+        }
+    }
+    OcxUsage {
+        summary: OcxUsageSummary {
+            estimated_cost_usd: None,
+            total_tokens,
+            requests,
+            unpriced_requests,
+            unmetered_requests,
+        },
+        history_truncated,
+        range: "24h".into(),
+    }
+}
+
+fn read_ocx_usage_24h() -> Result<OcxUsage, String> {
+    use std::io::{Read, Seek, SeekFrom};
+    const MAX_READ_BYTES: u64 = 64 * 1024 * 1024;
+    let path = ocx_home()?.join("usage.jsonl");
+    let mut file = std::fs::File::open(path).map_err(|e| format!("Opencodex 사용 기록을 읽을 수 없습니다: {e}"))?;
+    let length = file.metadata().map_err(|e| format!("Opencodex 사용 기록 크기 조회 실패: {e}"))?.len();
+    let offset = length.saturating_sub(MAX_READ_BYTES);
+    if offset > 0 { file.seek(SeekFrom::Start(offset)).map_err(|e| format!("Opencodex 사용 기록 탐색 실패: {e}"))?; }
+    let mut bytes = Vec::with_capacity((length - offset).min(MAX_READ_BYTES) as usize);
+    file.read_to_end(&mut bytes).map_err(|e| format!("Opencodex 사용 기록 읽기 실패: {e}"))?;
+    let text = String::from_utf8_lossy(&bytes);
+    let text = if offset > 0 { text.split_once('\n').map(|(_, rest)| rest).unwrap_or("") } else { &text };
+    let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_| "시스템 시간이 올바르지 않습니다")?.as_millis() as u64;
+    Ok(summarize_usage_24h(text, now_ms, offset > 0))
+}
+
 fn ocx_home() -> Result<std::path::PathBuf, String> {
     if let Some(dir) = std::env::var_os("OPENCODEX_HOME").filter(|v| !v.is_empty()) { return Ok(dir.into()); }
     Ok(std::path::PathBuf::from(std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")).ok_or("사용자 홈 경로를 찾을 수 없습니다")?).join(".opencodex"))
@@ -965,8 +1016,9 @@ async fn bearer_request_method(url: &str, token: String, timeout: &str, body: Op
 
 #[tauri::command]
 async fn get_ocx_usage(range: Option<String>) -> Result<OcxUsage, String> {
-    let range = range.as_deref().unwrap_or("all");
-    if !["all", "7d", "30d"].contains(&range) { return Err("지원하지 않는 사용량 기간".into()); }
+    let range = range.as_deref().unwrap_or("24h");
+    if range == "24h" { return read_ocx_usage_24h(); }
+    if !["7d", "30d"].contains(&range) { return Err("지원하지 않는 사용량 기간".into()); }
     parse_ocx_usage(&ocx_request(&format!("/api/usage?range={range}"), true, "8").await?)
 }
 
@@ -1018,6 +1070,44 @@ async fn get_ocx_providers() -> Result<serde_json::Value, String> {
 #[tauri::command]
 async fn get_ocx_models() -> Result<serde_json::Value, String> {
     parse_ocx_response(&ocx_request("/api/models", true, "8").await?)
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OcxAutoHandoffTarget {
+    provider: String,
+    model: String,
+}
+
+#[tauri::command]
+async fn configure_ocx_auto_handoff(targets: Vec<OcxAutoHandoffTarget>) -> Result<serde_json::Value, String> {
+    if targets.len() < 2 || targets.len() > 16 {
+        return Err("자동 전환에는 2개 이상의 AI 제공자가 필요합니다".into());
+    }
+    let mut seen = std::collections::HashSet::new();
+    let targets = targets.into_iter().map(|target| {
+        let provider = target.provider.trim();
+        let model = target.model.trim();
+        if provider.is_empty() || model.is_empty() || provider.len() > 128 || model.len() > 256
+            || provider.contains(['\r', '\n']) || model.contains(['\r', '\n']) {
+            return Err("자동 전환 대상 형식이 올바르지 않습니다".to_string());
+        }
+        if !seen.insert(provider.to_owned()) {
+            return Err("자동 전환 제공자가 중복되었습니다".to_string());
+        }
+        Ok(serde_json::json!({ "provider": provider, "model": model, "weight": 1 }))
+    }).collect::<Result<Vec<_>, _>>()?;
+    let body = serde_json::json!({
+        "id": "agent-dock-auto",
+        "combo": { "strategy": "failover", "stickyLimit": 1, "targets": targets }
+    }).to_string();
+    let response = bearer_request_method(
+        &format!("{}/api/combos", ocx_base_url()?),
+        read_admin_token()?, "30", Some(body), "PUT",
+    ).await?;
+    let value = parse_ocx_response(&response)?;
+    let model = value.get("model").and_then(|v| v.as_str()).ok_or("자동 전환 모델 응답 형식 오류")?;
+    Ok(serde_json::json!({ "model": model }))
 }
 
 #[tauri::command]
@@ -1129,6 +1219,25 @@ async fn set_crew_mode(mode: String) -> Result<serde_json::Value, String> {
 #[cfg(test)]
 mod ocx_tests {
     use super::*;
+
+    #[test]
+    fn rolling_24h_usage_excludes_old_future_and_invalid_rows() {
+        let now = 2_000_000_000_000_u64;
+        let recent = now - 60 * 60 * 1000;
+        let old = now - 25 * 60 * 60 * 1000;
+        let future = now + 1;
+        let input = format!(
+            "not json\n{{\"timestamp\":{recent},\"totalTokens\":120}}\n{{\"timestamp\":{recent},\"usage\":{{\"totalTokens\":30}}}}\n{{\"timestamp\":{recent}}}\n{{\"timestamp\":{old},\"totalTokens\":900}}\n{{\"timestamp\":{future},\"totalTokens\":800}}"
+        );
+        let usage = summarize_usage_24h(&input, now, true);
+        assert_eq!(usage.range, "24h");
+        assert_eq!(usage.summary.requests, 3);
+        assert_eq!(usage.summary.total_tokens, 150);
+        assert_eq!(usage.summary.unpriced_requests, 2);
+        assert_eq!(usage.summary.unmetered_requests, 1);
+        assert_eq!(usage.summary.estimated_cost_usd, None);
+        assert!(usage.history_truncated);
+    }
 
     #[test]
     fn usage_rejects_read_failure_even_with_success_status() {
@@ -1272,6 +1381,7 @@ pub fn run() {
             get_ocx_quotas,
             get_ocx_providers,
             get_ocx_models,
+            configure_ocx_auto_handoff,
             get_ocx_accounts,
             consume_codex_reset_credit,
             list_project_tree,

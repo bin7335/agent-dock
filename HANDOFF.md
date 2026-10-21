@@ -1,26 +1,27 @@
 # Agent Dock — 핸드오프 노트
 
-## 최신 저장: 2026-09-22 — 다음 세션은 여기부터
+## 최신 저장: 2026-10-21 — 다음 세션은 여기부터
 
-현재 작업 경로는 `C:\PROJECT\agent-dock`이다. 아래 과거 기록의 D: 경로·창 크기·AFK 완료 주장은 현재 상태와 다르며, 이 절을 우선한다. 진행 상황 저장 후 사용자가 **커밋·푸시까지 요청**했다. 작업 결과와 이 문서를 `origin/main`에 게시하며, 완료 여부와 커밋은 Git 기록으로 확인한다. 참고용 `_opencodex_review/` 복제 저장소는 커밋 대상에서 제외한다.
+현재 작업 경로는 `C:\PROJECT\agent-dock`이다.
+최근 작업으로 **24시간 롤링 사용량 집계**와 Opencodex Failover 연동을 통한 **AI 자동 전환 콤보(auto-handoff routing)**가 구현 및 검증 완료되었다.
 
 ### 완료한 작업
 
-1. **Opencodex 연동**: Rust 비동기 curl 호출, 인증 헤더 stdin 전달, 시간 제한·HTTP/JSON 오류 처리. 사용량 기간을 서버 계약에 맞는 `all`/`7d`/`30d`로 수정. HTTP 200의 `read_failed`도 오류 처리하고 미산정 요청·기록 잘림을 표시한다. 환경 변수와 OCX 홈·포트 설정을 읽는다.
-2. **실제 리소스 표시**: `src-tauri/src/resources.rs`의 Windows API로 PC CPU·RAM 및 OCX 프로세스 CPU·메모리 조회. 첫 CPU 표본·연결 실패는 미확인 표시. 프론트 `src/useTelemetry.ts`에서 리소스 2초, 사용량 10초, 상태 15초, 한도 60초 간격으로 조회한다(응답 완료 후 다음 조회; 서버 한도 캐시는 별도).
-3. **전체 UI 개편**: 개요·대화·설정 탭, 컴팩트 비용·토큰·리소스, 하단 AI 한도. `src/DockPanels.tsx`에서 기본은 제공자명·남은 비율·막대, 마우스/포커스 시 기간별 상세·리셋 시간. 사용률을 남은 비율로 변환하며 미제공·만료 표본을 100%로 추정하지 않는다. 실제 동작하지 않는 OAuth·AFK·자동 전환 버튼은 제거했다. AFK 백엔드는 여전히 스텁이다.
-4. **최근 사용자 피드백 반영**: 마우스 이탈 시 접힘 대기 180ms를 제거했다. Tauri `resizable: true`, 최소 380×188, 오른쪽 아래 드래그 손잡이와 `allow-start-resize-dragging` 권한 추가. 기본 컴팩트 380×188, 한도 상세 높이 최소 440, 펼침 520×740. 접힘/펼침 크기를 메모리에 따로 기억하여 한도 조회·제공자 전환 때 수동 크기가 초기화되지 않게 수정했다. 앱 재시작 이후까지 크기를 저장하는 기능은 없다.
-5. **검토 문서**: `OPENCODEX_REVIEW.md`에 upstream `coseung2/opencodex`의 `f6735fd552b04ad7ef59abbd99aa54a707121113` (2.8.0-cs.32) 기준 수정 완료 항목과 남은 후보를 기록했다. 참고용 로컬 복제는 `_opencodex_review/`이다.
+1. **24시간 롤링 사용량 집계 (`summarize_usage_24h` / `read_ocx_usage_24h`)**:
+   - `src-tauri/src/lib.rs`에서 `usage.jsonl` 파일의 최근 24시간 요청·토큰 수를 직접 집계. 기본 범위 옵션을 `24h`로 적용하고 UI에 토큰/요청 안내 추가.
+   - 단위 테스트 `rolling_24h_usage_excludes_old_future_and_invalid_rows` 추가 및 통과.
+2. **AI 제공자 간 자동 전환 콤보 연동 (`configure_ocx_auto_handoff`)**:
+   - Rust 백엔드에서 OpenCodex `/api/combos` PUT API를 호출하여 장애 복구(failover) 전략의 `agent-dock-auto` 콤보 모델을 등록.
+   - `src/ProviderPriority.tsx`에서 AI 제공자별 대상 모델 선택 드롭다운(`select`)을 추가하고, 활성화 시 자동 전환 콤보를 동기화하여 상태 표시.
+   - `src/App.tsx`에서 자동 전환 활성화 시 개별 모델 대신 생성된 자동 콤보 모델로 채팅 요청을 전송하도록 연동.
+3. **위젯 접힘 스타일 및 레이아웃 정리**:
+   - 컴팩트 모드에서 불필요한 탭/요소 숨김 처리 정리.
 
-### 검증 상태 — 최근 수정 전후를 구분
+### 검증 상태
 
-- 2026-09-22 커밋 준비 최종 검사: `npm run build`, `node scripts/check-quota.cjs`, Rust 전체 테스트 **56개 통과·2개 제외**. 개인 경로가 있는 미추적 `launch.cmd`는 참고 복제 저장소와 함께 로컬에 남긴다.
-
-- UI 개편 후 `npm run build` 통과. Rust 전체 테스트 54개 통과·외부 실행 2개 제외. 이후 추가한 오류·메타데이터 테스트 포함 `cargo test --manifest-path src-tauri/Cargo.toml ocx_tests` 6개 통과·실서버 테스트 1개 제외.
-- `node scripts/check-quota.cjs` 통과: 남은 한도 변환, 0/100%, 미제공, 만료, 초/밀리초 리셋, 크레딧, 모델별 윈도우.
-- UI 개편은 실제 Tauri WebView에서 사용량·리소스·AI 한도 렌더링, 마우스 진입/이탈 크기 변경, 세 탭의 가로 넘침 없음을 확인했다. 이 확인은 **180ms 제거·수동 크기 조절 수정 이전**이다.
-- 최근 즉시 접힘·수동 크기 조절 수정 후에는 `npm run build`와 `cargo check --manifest-path src-tauri/Cargo.toml` 통과. 실제 모서리 드래그·크기 복원은 아직 재검증하지 못했다. CDP `127.0.0.1:9223` 재접속이 거부되어 기존 자동 화면 검증을 실행하지 못했다. 실행 중 앱이 없다는 뜻은 아니다.
-- 커밋 준비 중 `src-tauri/capabilities/default.json`의 혼합 줄바꿈·들여쓰기를 정리했다. 서버 중단·복구 전체 E2E와 유료 대화 실행은 이번 작업에서 하지 않았다.
+- `npm run build`: 프론트엔드 빌드 통과.
+- `cargo test --manifest-path src-tauri/Cargo.toml`: 58개 통과 (0개 실패, 2개 제외).
+- `node scripts/check-crew.cjs`, `node scripts/check-provider-priority.cjs`, `node scripts/check-quota.cjs`: 모두 통과.
 
 ### 다음 작업 순서
 

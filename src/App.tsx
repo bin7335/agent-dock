@@ -331,6 +331,7 @@ function App() {
   const [theme, setTheme] = useState(() => loadStored("agentdock.theme", "system"));
   const [fontScale, setFontScale] = useState(() => loadStored("agentdock.fontScale", "100"));
   const [autoHandoff, setAutoHandoff] = useState(() => loadStored("agentdock.autoHandoff", "true") === "true");
+  const [autoRouteModel, setAutoRouteModel] = useState<string | null>(null);
   const [input, setInput] = useState("");
   const [error, setError] = useState("");
   const [chatMenuOpen, setChatMenuOpen] = useState(false);
@@ -471,9 +472,9 @@ function App() {
     if (!force && modelOptions[target]) return;
     setModelLoading((m) => ({ ...m, [target]: true }));
     try {
-      const rows = await invoke<{ id: string; namespaced?: string; label?: string; display_name?: string; disabled?: boolean }[]>("get_ocx_models");
+      const rows = await invoke<{ id: string; namespaced?: string; label?: string; display_name?: string; provider?: string; disabled?: boolean }[]>("get_ocx_models");
       const list: ModelOption[] = rows.filter(m => !m.disabled && (m.namespaced || m.id)).map(m => ({
-        id: m.namespaced || m.id, label: m.label || m.display_name || m.namespaced || m.id, is_default: false,
+        id: m.namespaced || m.id, label: m.label || m.display_name || m.namespaced || m.id, is_default: false, provider: m.provider, route_model: m.id,
       }));
       setModelOptions((m) => ({ ...m, [target]: list }));
     } catch (e) {
@@ -489,6 +490,7 @@ function App() {
   }
 
   function modelLabel(target: CliId): string {
+    if (autoHandoff && autoRouteModel) return "자동 전환";
     const id = modelChoice[target];
     if (!id) return "기본";
     return modelOptions[target]?.find((m) => m.id === id)?.label.split(" — ")[0] ?? id;
@@ -542,7 +544,7 @@ function App() {
   async function send() {
     const text = input.trim();
     if (!text) return;
-    if (!modelOptions[cli]?.some(m => m.id === modelChoice[cli])) {
+    if (!(autoHandoff && autoRouteModel) && !modelOptions[cli]?.some(m => m.id === modelChoice[cli])) {
       setError("사용 가능한 모델을 선택하세요. 목록이 없으면 새로고침해 주세요.");
       return;
     }
@@ -585,7 +587,7 @@ function App() {
     setInput("");
 
     try {
-      const model = modelChoice[target];
+      const model = autoHandoff && autoRouteModel ? autoRouteModel : modelChoice[target];
       const runId = await invoke<number>("send_chat", {
         request, projectDir: conv.projectDir, allowWrites: conv.allowWrites,
         model, sessionId: sess.sessionId,
@@ -698,7 +700,7 @@ function App() {
 
   const [isExpanded, setIsExpanded] = useState(false);
   const [quotaActive, setQuotaActive] = useState<string | null>(null);
-  const [usageRange, setUsageRange] = useState("all");
+  const [usageRange, setUsageRange] = useState("24h");
   const [refresh, setRefresh] = useState(0);
   const telemetry = useTelemetry(usageRange, refresh);
   const online = !!telemetry.health.data && !telemetry.health.error;
@@ -778,8 +780,7 @@ function App() {
       </div>
       {!isExpanded && <div className="compact-body"><UsagePanel telemetry={telemetry} compact range={usageRange} onRange={setUsageRange} /><ResourcePanel telemetry={telemetry} compact /></div>}
       <div className="firstmate-view" hidden={!isExpanded || tab !== "crew"}><CrewPanel projectDir={projectDir} onBusy={setCrewBusy} /></div>
-      {isExpanded && (
-        <>
+      <>
         <nav className="dock-tabs" aria-label="위젯 메뉴">{([['overview', '개요'], ['chat', '대화'], ['settings', '설정']] as const).map(([key, label]) => <button key={key} className={tab === key ? 'active' : ''} aria-current={tab === key ? 'page' : undefined} onClick={() => { setTab(key); setQuotaActive(null); if (key === "chat") setIsExpanded(true); }}>{label}{key === 'chat' && pendingTotal > 0 && <span className="count-badge">{pendingTotal}</span>}</button>)}<button className={tab === "crew" ? "active" : ""} onClick={() => { setTab("crew"); setQuotaActive(null); }}>Crew</button><button className="refresh-button" onClick={() => setRefresh(v => v + 1)} title="연결·사용량·한도 새로고침" aria-label="새로고침">↻</button></nav>
         <div className={`app tab-${tab}`}>
           {tab === "overview" && <><ResourcePanel telemetry={telemetry} compact={false} /><UsagePanel telemetry={telemetry} compact={false} range={usageRange} onRange={setUsageRange} /></>}
@@ -854,7 +855,7 @@ function App() {
               rows={3}
               disabled={running}
             />
-            <button onClick={() => void send()} disabled={running || !input.trim() || !modelOptions[cli]?.some(m => m.id === modelChoice[cli])}>
+            <button onClick={() => void send()} disabled={running || !input.trim() || (!(autoHandoff && autoRouteModel) && !modelOptions[cli]?.some(m => m.id === modelChoice[cli]))}>
               보내기
             </button>
           </div>
@@ -950,8 +951,7 @@ function App() {
         })}
       </footer>
 
-      {tab === "settings" && (
-        <section className="registry-panel">
+      <section className="registry-panel" hidden={tab !== "settings"}>
             <div className="panel-head">
               <h2>연결 및 설정</h2>
               <div className="actions">
@@ -962,14 +962,12 @@ function App() {
             </div>
             <div className="connection-card"><div><strong>Opencodex</strong><p className="muted">{telemetry.health.data?.url ?? "로컬 서버 연결 대기"}</p><small>{telemetry.health.data?.version ? `v${telemetry.health.data.version}` : "서버를 시작하면 자동 연결됩니다"}</small></div><button onClick={openDashboard}>계정 관리 ↗</button></div>
             <p className="muted settings-help">AI 제공자·계정·로그인은 Opencodex에서 관리합니다. 계정 관리 버튼으로 대시보드를 열 수 있습니다.</p>
-            <div className="preference-card"><h3>화면 설정</h3><div className="theme-buttons" role="group" aria-label="테마"><button className={theme === "system" ? "active" : ""} onClick={() => { setTheme("system"); store("agentdock.theme", "system"); }}>시스템</button><button className={theme === "dark" ? "active" : ""} onClick={() => { setTheme("dark"); store("agentdock.theme", "dark"); }}>어두움</button><button className={theme === "light" ? "active" : ""} onClick={() => { setTheme("light"); store("agentdock.theme", "light"); }}>밝음</button></div><label className="font-size-setting"><span>글자 크기</span><div className="theme-buttons" role="group" aria-label="글자 크기"><button className={fontScale === "85" ? "active" : ""} onClick={() => { setFontScale("85"); store("agentdock.fontScale", "85"); }}>작게</button><button className={fontScale === "100" ? "active" : ""} onClick={() => { setFontScale("100"); store("agentdock.fontScale", "100"); }}>기본</button><button className={fontScale === "115" ? "active" : ""} onClick={() => { setFontScale("115"); store("agentdock.fontScale", "115"); }}>크게</button></div></label></div>
             <div className="preference-card handoff-setting"><div><h3>한도 도달 시 자동 전환</h3><p className="muted">현재 제공자의 계정 풀이 모두 소진되면 다음 제공자로 넘깁니다.</p></div><button className={`toggle-switch ${autoHandoff ? "on" : ""}`} aria-pressed={autoHandoff} onClick={() => { const next = !autoHandoff; setAutoHandoff(next); store("agentdock.autoHandoff", String(next)); }}>{autoHandoff ? "켜짐" : "꺼짐"}</button></div>
-            {autoHandoff && <ProviderPriority telemetry={telemetry} />}
-        </section>
-      )}
+            <ProviderPriority telemetry={telemetry} enabled={autoHandoff} models={modelOptions[cli] ?? []} currentModel={modelChoice[cli] ?? ""} onRouteModel={setAutoRouteModel} />
+            <div className="preference-card"><h3>화면 설정</h3><div className="theme-buttons" role="group" aria-label="테마"><button className={theme === "system" ? "active" : ""} onClick={() => { setTheme("system"); store("agentdock.theme", "system"); }}>시스템</button><button className={theme === "dark" ? "active" : ""} onClick={() => { setTheme("dark"); store("agentdock.theme", "dark"); }}>어두움</button><button className={theme === "light" ? "active" : ""} onClick={() => { setTheme("light"); store("agentdock.theme", "light"); }}>밝음</button></div><label className="font-size-setting"><span>글자 크기</span><div className="theme-buttons" role="group" aria-label="글자 크기"><button className={fontScale === "85" ? "active" : ""} onClick={() => { setFontScale("85"); store("agentdock.fontScale", "85"); }}>작게</button><button className={fontScale === "100" ? "active" : ""} onClick={() => { setFontScale("100"); store("agentdock.fontScale", "100"); }}>기본</button><button className={fontScale === "115" ? "active" : ""} onClick={() => { setFontScale("115"); store("agentdock.fontScale", "115"); }}>크게</button></div></label></div>
+      </section>
         </div>
-        </>
-      )}
+      </>
       {error && (!isExpanded || tab !== "chat") && <div className="dock-error" role="alert" title={error}>{error}<button className="icon-button" aria-label="오류 닫기" onClick={() => setError("")}>×</button></div>}
       <QuotaFooter telemetry={telemetry} active={quotaActive} onActive={setQuotaActive} compact={!isExpanded} onRefresh={() => setRefresh(v => v + 1)} />
       <div className="resize-grip" title="드래그해서 창 크기 조절" onMouseDown={e => {
