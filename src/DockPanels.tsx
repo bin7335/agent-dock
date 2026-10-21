@@ -83,6 +83,17 @@ export function remaining(window: QuotaWindow, now = Date.now()): number | null 
   if (window.resetAt && resetEpoch(window.resetAt) <= now) return null;
   return Math.max(0, Math.min(100, 100 - window.percent));
 }
+
+export function providerSummaryPercent(windows: QuotaWindow[]): { percent: number | null; partialOutage: boolean } {
+  const values = windows.map(w => remaining(w)).filter((v): v is number => v !== null);
+  if (!values.length) return { percent: null, partialOutage: false };
+  const available = values.filter(v => v > 0);
+  const hasZero = values.some(v => v === 0);
+  if (available.length > 0) {
+    return { percent: Math.max(...available), partialOutage: hasZero };
+  }
+  return { percent: 0, partialOutage: false };
+}
 function resetEpoch(value: number) { return value < 10_000_000_000 ? value * 1000 : value; }
 function resetText(value?: number) {
   if (!value) return "리셋 시각 미제공";
@@ -107,17 +118,17 @@ export function QuotaFooter({ telemetry, active, onActive, compact, onRefresh }:
     <div className="quota-heading"><span>AI 남은 한도</span><span>{error ? (data ? "조회 실패 · 이전 값" : "조회 실패") : compact ? "" : "마우스를 올려 상세 보기"}</span></div>
     <div className={`quota-strip ${compact ? "quota-compact-list" : ""}`}>{providers.map(name => {
       const r = reportFor(name);
-      const values = quotaWindows(r).map(w => remaining(w)).filter((v): v is number => v !== null);
-      const left = values.length ? Math.min(...values) : null;
+      const pSummary = providerSummaryPercent(quotaWindows(r));
+      const left = pSummary.percent;
       const daily = quotaWindows(r).find(w => w.remainingRequests != null && remaining(w) !== null);
       const stale = error || (r && Date.now() - r.updatedAt > 10 * 60000);
       const label = name === "google" ? "Google API" : r?.label ?? name;
       if (compact) return <div key={name} className={`quota-compact-row ${providerClass(name)} ${left !== null && left < 20 ? "low" : ""}`} title={label}>
-        <span>{label}</span><span className="meter"><i style={{ width: `${left ?? 0}%` }} /></span><b>{stale ? "~" : ""}{daily ? `${daily.remainingRequests}회` : left === null ? "미확인" : percentage(left)}</b>
+        <span>{label}</span><span className="meter"><i style={{ width: `${left ?? 0}%` }} /></span><b>{stale ? "~" : ""}{daily ? `${daily.remainingRequests}회` : left === null ? "미확인" : percentage(left)}{pSummary.partialOutage ? " ⚠️" : ""}</b>
       </div>;
       return <button key={name} className={`quota-chip ${providerClass(name)} ${active === name ? "selected" : ""} ${left !== null && left < 20 ? "low" : ""}`} aria-expanded={active === name}
         onMouseEnter={() => show(name)} onFocus={() => show(name)} onClick={() => show(name)} aria-label={`${label} 남은 한도 ${percentage(left)} 상세`}>
-        <span className="quota-chip-name" title={label}>{label}</span><b>{stale ? "~" : ""}{daily ? `${daily.remainingRequests}회` : left === null ? "미확인" : percentage(left)}</b><span className="meter"><i style={{ width: `${left ?? 0}%` }} /></span>
+        <span className="quota-chip-name" title={label}>{label}</span><b>{stale ? "~" : ""}{daily ? `${daily.remainingRequests}회` : left === null ? "미확인" : percentage(left)}{pSummary.partialOutage ? " ⚠️" : ""}</b><span className="meter"><i style={{ width: `${left ?? 0}%` }} /></span>
       </button>;
     })}</div>
     {!providers.length && <p className="quota-empty">{error ? "한도 조회 실패 · 개요에서 새로고침하세요" : data ? "연결된 AI 제공자가 없습니다" : "AI 한도 불러오는 중…"}</p>}

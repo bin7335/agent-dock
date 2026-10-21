@@ -1,6 +1,6 @@
-mod adapters;
+﻿mod adapters;
 mod availability;
-// DB 스키마는 SQLite 영속화 배선 전까지 참조되지 않는다.
+// DB ?ㅽ궎留덈뒗 SQLite ?곸냽??諛곗꽑 ?꾧퉴吏 李몄“?섏? ?딅뒗??
 #[allow(dead_code)]
 mod db;
 mod models;
@@ -24,41 +24,42 @@ use models::{CliId, CommandSpec, Job, JobStatus, ModelOption};
 use scheduler::RoutingProfile;
 use tauri::{AppHandle, Emitter, Manager};
 
-/// probe 명령(version·login status) 상한. 넘기면 죽이고 unavailable로 본다.
+/// probe 紐낅졊(version쨌login status) ?곹븳. ?섍린硫?二쎌씠怨?unavailable濡?蹂몃떎.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(20);
-/// 모델 목록 조회 상한 (app-server·ACP 기동 포함)
+/// 紐⑤뜽 紐⑸줉 議고쉶 ?곹븳 (app-server쨌ACP 湲곕룞 ?ы븿)
 const MODEL_LIST_TIMEOUT: Duration = Duration::from_secs(30);
-/// 로그인 흐름 상한 — 브라우저 로그인을 기다린다
+/// 濡쒓렇???먮쫫 ?곹븳 ??釉뚮씪?곗? 濡쒓렇?몄쓣 湲곕떎由곕떎
 const LOGIN_TIMEOUT: Duration = Duration::from_secs(10 * 60);
-/// 로그인 콘솔이 열려 있는 동안 재검사 주기. 브라우저 로그인이 끝나면 창을 닫지 않아도 곧 초록으로 바뀐다.
+/// 濡쒓렇??肄섏넄???대젮 ?덈뒗 ?숈븞 ?ш???二쇨린. 釉뚮씪?곗? 濡쒓렇?몄씠 ?앸굹硫?李쎌쓣 ?レ? ?딆븘??怨?珥덈줉?쇰줈 諛붾먮떎.
 const LOGIN_POLL: Duration = Duration::from_secs(8);
-/// 승인 요청 무응답 상한. 지나면 자동 거부해 CLI가 멈춰 있지 않게 한다 (PRD 5장 무인 정책의 최소 안전장치)
+/// ?뱀씤 ?붿껌 臾댁쓳???곹븳. 吏?섎㈃ ?먮룞 嫄곕???CLI媛 硫덉떠 ?덉? ?딄쾶 ?쒕떎 (PRD 5??臾댁씤 ?뺤콉??理쒖냼 ?덉쟾?μ튂)
 const APPROVAL_TIMEOUT: Duration = Duration::from_secs(10 * 60);
-/// 모니터 틱 간격. 틱마다 쿨다운 만료·재검사 예정만 확인하므로 가볍다.
+/// 紐⑤땲????媛꾧꺽. ?깅쭏??荑⑤떎??留뚮즺쨌?ш????덉젙留??뺤씤?섎?濡?媛蹂띾떎.
 const TICK_INTERVAL: Duration = Duration::from_secs(30);
-/// 마지막 가용성 스냅샷 보존 파일 (앱 데이터 폴더). 재시작 후 Claude의 공식 사용률을 잃지 않기 위해.
+/// 留덉?留?媛?⑹꽦 ?ㅻ깄??蹂댁〈 ?뚯씪 (???곗씠???대뜑). ?ъ떆????Claude??怨듭떇 ?ъ슜瑜좎쓣 ?껋? ?딄린 ?꾪빐.
 const STORE_FILE: &str = "availability.json";
 
 struct AppState {
     runner: Arc<runner::Runner>,
     monitor: Arc<Mutex<AvailabilityMonitor>>,
-    /// 라우팅 프로필. 상단 카드 드래그로 chain이 바뀐다 (set_routing_chain).
+    /// ?쇱슦???꾨줈?? ?곷떒 移대뱶 ?쒕옒洹몃줈 chain??諛붾먮떎 (set_routing_chain).
     profile: Mutex<RoutingProfile>,
-    /// 답을 기다리는 승인 요청 (run_id, request_id) → 원본. respond_permission이 꺼내 쓴다
+    /// ?듭쓣 湲곕떎由щ뒗 ?뱀씤 ?붿껌 (run_id, request_id) ???먮낯. respond_permission??爰쇰궡 ?대떎
     pending: PendingMap,
 }
 
 type PendingMap = Arc<Mutex<HashMap<(u64, String), PendingApproval>>>;
 
-/// 승인 요청 원본. 도구 입력·제안은 JSON 문자열 그대로 보관해 응답에 돌려준다
+/// ?뱀씤 ?붿껌 ?먮낯. ?꾧뎄 ?낅젰쨌?쒖븞? JSON 臾몄옄??洹몃?濡?蹂닿????묐떟???뚮젮以
 struct PendingApproval {
     cli: CliId,
     input: String,
     suggestions: String,
 }
 
-/// 프론트로 흘려보내는 실행 이벤트. listen("agent-event")로 수신한다.
-/// cli를 함께 실어 프론트가 run_id→cli 매핑을 타이밍에 의존하지 않게 한다.
+
+/// ?꾨줎?몃줈 ?섎젮蹂대궡???ㅽ뻾 ?대깽?? listen("agent-event")濡??섏떊?쒕떎.
+/// cli瑜??④퍡 ?ㅼ뼱 ?꾨줎?멸? run_id?뭖li 留ㅽ븨????대컢???섏〈?섏? ?딄쾶 ?쒕떎.
 #[derive(Clone, serde::Serialize)]
 struct RunEvent {
     run_id: u64,
@@ -77,7 +78,7 @@ fn adapter_for(cli: CliId) -> Result<Arc<dyn CliAdapter>, String> {
     adapters::registry()
         .into_iter()
         .find(|a| a.id() == cli)
-        .ok_or_else(|| "등록되지 않은 CLI".to_string())
+        .ok_or_else(|| "?깅줉?섏? ?딆? CLI".to_string())
 }
 
 fn make_job(
@@ -91,7 +92,7 @@ fn make_job(
         title: request.chars().take(40).collect(),
         request,
         project_dir,
-        profile: "코딩 작업".into(),
+        profile: "肄붾뵫 ?묒뾽".into(),
         allow_writes,
         unattended_ok: false,
         status: JobStatus::Starting,
@@ -125,14 +126,14 @@ fn snapshots_of(monitor: &Mutex<AvailabilityMonitor>) -> Vec<AvailabilitySnapsho
     monitor.lock().map(|m| m.snapshots()).unwrap_or_default()
 }
 
-/// 가용성 변화를 프론트로 알리고 파일에도 보존한다. listen("availability-changed")
+/// 媛?⑹꽦 蹂?붾? ?꾨줎?몃줈 ?뚮━怨??뚯씪?먮룄 蹂댁〈?쒕떎. listen("availability-changed")
 fn emit_availability(app: &AppHandle, monitor: &Mutex<AvailabilityMonitor>) {
     let snaps = snapshots_of(monitor);
     save_store(app, &snaps);
     let _ = app.emit("availability-changed", snaps);
 }
 
-/// 실행 스트림에서 한도·인증 신호를 뽑아 모니터에 반영한다 (PRD 6장: 스트림에서 한도 신호 수집).
+/// ?ㅽ뻾 ?ㅽ듃由쇱뿉???쒕룄쨌?몄쬆 ?좏샇瑜?戮묒븘 紐⑤땲?곗뿉 諛섏쁺?쒕떎 (PRD 6?? ?ㅽ듃由쇱뿉???쒕룄 ?좏샇 ?섏쭛).
 fn observe_run_event(
     app: &AppHandle,
     monitor: &Mutex<AvailabilityMonitor>,
@@ -152,7 +153,7 @@ fn observe_run_event(
             .lock()
             .map(|mut m| m.apply_failure(cli, summary, now()).is_some())
             .unwrap_or(false),
-        // stderr에는 진단 로그가 섞이므로 한도·인증처럼 확실한 패턴만 반영한다
+        // stderr?먮뒗 吏꾨떒 濡쒓렇媛 ?욎씠誘濡??쒕룄쨌?몄쬆泥섎읆 ?뺤떎???⑦꽩留?諛섏쁺?쒕떎
         AgentEvent::Stderr { text } => match availability::classify_failure(text) {
             FailureKind::RateLimit | FailureKind::Auth => monitor
                 .lock()
@@ -168,7 +169,7 @@ fn observe_run_event(
 }
 
 async fn probe_one(adapter: &dyn CliAdapter) -> ProbeOutcome {
-    // 줄 단위 교환형 probe (Gemini ACP: session/new 성공 = 인증 OK)
+    // 以??⑥쐞 援먰솚??probe (Gemini ACP: session/new ?깃났 = ?몄쬆 OK)
     if let Some(ex) = adapter.probe_exchange() {
         let done_id = ex.done_id;
         return match runner::exchange_lines(
@@ -181,23 +182,23 @@ async fn probe_one(adapter: &dyn CliAdapter) -> ProbeOutcome {
         {
             Ok(lines) => adapter.interpret_probe_lines(&lines),
             Err(e) => ProbeOutcome::Unavailable {
-                detail: format!("실행 실패: {e}"),
+                detail: format!("?ㅽ뻾 ?ㅽ뙣: {e}"),
             },
         };
     }
     let spec = adapter.probe_command();
     match runner::run_capture(&spec, PROBE_TIMEOUT).await {
         Ok(out) if out.timed_out => ProbeOutcome::Unavailable {
-            detail: format!("probe 시간 초과: {}", out.stderr),
+            detail: format!("probe ?쒓컙 珥덇낵: {}", out.stderr),
         },
         Ok(out) => adapter.interpret_probe(out.code, &out.stdout, &out.stderr),
         Err(e) => ProbeOutcome::Unavailable {
-            detail: format!("실행 실패: {e}"),
+            detail: format!("?ㅽ뻾 ?ㅽ뙣: {e}"),
         },
     }
 }
 
-/// 지정 CLI들을 순서대로 probe하고 결과마다 프론트에 알린다.
+/// 吏??CLI?ㅼ쓣 ?쒖꽌?濡?probe?섍퀬 寃곌낵留덈떎 ?꾨줎?몄뿉 ?뚮┛??
 async fn run_probes(app: &AppHandle, monitor: &Mutex<AvailabilityMonitor>, clis: &[CliId]) {
     for cli in clis {
         let Ok(adapter) = adapter_for(*cli) else {
@@ -208,7 +209,7 @@ async fn run_probes(app: &AppHandle, monitor: &Mutex<AvailabilityMonitor>, clis:
         if let Ok(mut m) = monitor.lock() {
             m.apply_probe(*cli, outcome, now());
         }
-        // 버전은 별도 명령으로 (probe가 버전을 안 주는 CLI)
+        // 踰꾩쟾? 蹂꾨룄 紐낅졊?쇰줈 (probe媛 踰꾩쟾????二쇰뒗 CLI)
         if ready {
             if let Some(spec) = adapter.version_command() {
                 if let Ok(out) = runner::run_capture(&spec, Duration::from_secs(15)).await {
@@ -220,7 +221,7 @@ async fn run_probes(app: &AppHandle, monitor: &Mutex<AvailabilityMonitor>, clis:
                 }
             }
         }
-        // 설치·로그인이 확인된 CLI만 공식 사용량을 읽는다 (Codex app-server 등)
+        // ?ㅼ튂쨌濡쒓렇?몄씠 ?뺤씤??CLI留?怨듭떇 ?ъ슜?됱쓣 ?쎈뒗??(Codex app-server ??
         if ready {
             if let Some(ex) = adapter.rate_limit_exchange() {
                 let done_id = ex.done_id;
@@ -245,7 +246,7 @@ async fn run_probes(app: &AppHandle, monitor: &Mutex<AvailabilityMonitor>, clis:
     }
 }
 
-/// 승인 요청 이벤트를 보관하고 무응답 타이머를 건다. 실행이 끝나면 그 run의 대기 항목을 비운다.
+/// ?뱀씤 ?붿껌 ?대깽?몃? 蹂닿??섍퀬 臾댁쓳????대㉧瑜?嫄대떎. ?ㅽ뻾???앸굹硫?洹?run???湲???ぉ??鍮꾩슫??
 fn track_permission(
     app: &AppHandle,
     pending: &PendingMap,
@@ -284,7 +285,6 @@ fn track_permission(
                     remember: false,
                     message: Some("Agent Dock: no answer from the user within 10 minutes".into()),
                 };
-                // 이미 답했으면 Err(처리됨)로 조용히 끝난다
                 let _ = resolve_permission(
                     &app,
                     &pending,
@@ -307,7 +307,7 @@ fn track_permission(
     }
 }
 
-/// 대기 중인 승인 요청을 꺼내 CLI에 응답을 보내고, 프론트에 처리 결과 이벤트를 낸다
+/// ?湲?以묒씤 ?뱀씤 ?붿껌??爰쇰궡 CLI???묐떟??蹂대궡怨? ?꾨줎?몄뿉 泥섎━ 寃곌낵 ?대깽?몃? ?몃떎
 #[allow(clippy::too_many_arguments)]
 async fn resolve_permission(
     app: &AppHandle,
@@ -323,7 +323,7 @@ async fn resolve_permission(
         .lock()
         .ok()
         .and_then(|mut p| p.remove(&(run_id, request_id.to_string())))
-        .ok_or("이미 처리된 승인 요청입니다")?;
+        .ok_or("Already resolved permission")?;
     let ctx = PermissionContext {
         request_id,
         input: &entry.input,
@@ -331,9 +331,9 @@ async fn resolve_permission(
     };
     let line = adapter
         .permission_reply(&ctx, decision)
-        .ok_or("이 CLI는 승인 중계를 지원하지 않습니다")?;
+        .ok_or("Already resolved permission")?;
     if !runner.write_stdin(run_id, &line).await {
-        return Err("실행이 이미 끝나 응답을 보낼 수 없습니다".into());
+        return Err("Run already finished".into());
     }
     let _ = app.emit(
         "agent-event",
@@ -350,7 +350,7 @@ async fn resolve_permission(
     Ok(())
 }
 
-/// 승인 요청에 답한다 (PRD 4장: 승인 요청을 앱 화면에서 처리). remember=true면 CLI가 제안한 범위로 세션 동안 허용
+/// ?뱀씤 ?붿껌???듯븳??(PRD 4?? ?뱀씤 ?붿껌?????붾㈃?먯꽌 泥섎━). remember=true硫?CLI媛 ?쒖븞??踰붿쐞濡??몄뀡 ?숈븞 ?덉슜
 #[tauri::command]
 async fn enable_afk_mode(duration: u64) -> Result<bool, String> {
     println!("AFK Mode activated for {} seconds. Delegation to Firstmate.", duration);
@@ -371,7 +371,7 @@ async fn respond_permission(
         .lock()
         .ok()
         .and_then(|p| p.get(&(run_id, request_id.clone())).map(|e| e.cli))
-        .ok_or("이미 처리된 승인 요청입니다")?;
+        .ok_or("Already resolved approval request")?;
     let adapter = adapter_for(cli)?;
     let decision = PermissionDecision {
         allow,
@@ -415,7 +415,7 @@ async fn spawn_run(
         .map_err(|e| e.to_string())
 }
 
-/// 새 대화를 시작한다. 반환값은 run_id.
+/// ????붾? ?쒖옉?쒕떎. 諛섑솚媛믪? run_id.
 #[tauri::command]
 async fn start_job(
     app: AppHandle,
@@ -445,12 +445,12 @@ async fn send_chat(
     model: String,
 ) -> Result<u64, String> {
     if request.trim().is_empty() || model.trim().is_empty() {
-        return Err("모델을 선택하고 메시지를 입력하세요".into());
+        return Err("Select model and enter message".into());
     }
     let adapter = adapter_for(CliId::Codex)?;
     let job = make_job(request, project_dir, allow_writes, Some(model));
     let mut spec = match session_id.as_deref() {
-        Some(id) => adapter.build_resume_command(&job, id).ok_or("세션 재개를 지원하지 않습니다")?,
+        Some(id) => adapter.build_resume_command(&job, id).ok_or("Session resume not supported")?,
         None => adapter.build_command(&job),
     };
     spec.args.extend(["-c".into(), format!("openai_base_url=\"{}/v1\"", ocx_base_url()?)]);
@@ -460,6 +460,27 @@ async fn send_chat(
 
 /// Firstmate uses the existing approval and streaming pipeline, with OCX routing pinned
 /// for this process only. User-wide Codex configuration is left untouched.
+fn build_firstmate_prompt(request: &str, crew_model: &str, allow_writes: bool) -> Result<String, String> {
+    let crew_model = serde_json::to_string(crew_model).map_err(|e| e.to_string())?;
+    Ok(format!(
+        "You are Firstmate, the user's supervising coding agent. The user is the captain.\n\
+         Follow this engineering workflow, adapted from the composable mattpocock/skills approach:\n\
+         1. Explore first. Do not explore or read all files alone: decompose the exploration and research into specialized subagent assignments.\n\
+         2. Proactively assemble and spawn a subagent crew immediately at the start of your workflow. Do not execute all work alone. Decompose the task into 2 or more specialized subagent roles (e.g., test runner, core implementer, researcher). Use the native subagent spawning tool spawnAgent or 'tools.multi_agent_v1__spawn_agent' (and wait or 'tools.multi_agent_v1__wait_agent') to launch and coordinate your crew right away.\n\
+         3. Align with the captain before modifying files on high-impact architectural changes; present your concrete acceptance criteria, proposed subagent assignments, and dependency graph. For analysis, testing, search, and non-destructive prototyping, proceed proactively without waiting. Wait for the captain's greenlight before starting mutative steps.\n\
+         4. Monitor subagents actively: report their states (working, waiting, completed) as they progress. Preferred crew model: {crew_model}.\n\
+         5. Use the tdd skill for test-driven implementation (red-green cycles) at meaningful seams. Run focused checks during implementation and full test suites once at the end.\n\
+         6. Use the code-review skill to review completed diffs on repository standards and user requirements before reporting completion.\n\
+         Break the task into concrete bounded assignments. To delegate, call spawnAgent or tools.multi_agent_v1__spawn_agent with the subagent prompt immediately. When using spawnAgent, pass message (or prompt) and receiver_agents with the subagent role.\n\
+         Preferred crew model: {crew_model}. Respect the active tool schema and model availability; report if the requested model cannot be used.\n\
+         Monitor every spawned worker with the collaboration tools until it completes or is blocked. Review its results, resolve routine failures, and summarize evidence and outstanding decisions for the captain.\n\
+         Do not claim a worker was created unless a tool confirmed it. If collaboration tools are unavailable, report that limitation instead of claiming delegated work.\n\
+         For parallel file edits, create separate git worktrees with unique branches first; otherwise serialize edits. Never discard existing user changes. Preserve worktrees for review.\n\
+         File writes permitted: {allow_writes}.\n\
+         Wait for your crew and return a final report of assignments, outcomes, tests, remaining issues and worktree paths.\n\nUser task:\n{request}"
+    ))
+}
+
 #[tauri::command]
 async fn start_firstmate(
     app: AppHandle,
@@ -471,24 +492,14 @@ async fn start_firstmate(
     crew_model: String,
 ) -> Result<u64, String> {
     if request.trim().is_empty() || model.trim().is_empty() || crew_model.trim().is_empty() {
-        return Err("작업과 Firstmate·Crew 모델을 선택하세요".into());
+        return Err("Select task and models".into());
     }
-    let project = std::fs::canonicalize(&project_dir).map_err(|_| "프로젝트 폴더를 확인하세요")?;
-    if !project.is_dir() { return Err("프로젝트 경로가 폴더가 아닙니다".into()); }
+    let project = std::fs::canonicalize(&project_dir).map_err(|_| "Invalid project directory")?;
+    if !project.is_dir() { return Err("?꾨줈?앺듃 寃쎈줈媛 ?대뜑媛 ?꾨떃?덈떎".into()); }
     get_ocx_health().await?;
     let mode = parse_ocx_response(&ocx_request("/api/v2", true, "8").await?)?;
     validate_crew_mode(mode["multiAgentMode"].as_str().unwrap_or(""))?;
-    let prompt = format!(
-        "You are Firstmate, the user's supervising coding agent. The user is the captain.\n\
-         Break the task into concrete bounded assignments. Use the available native collaboration tools to delegate to crew where useful.\n\
-         Preferred crew model: {}. Respect the active tool schema and model availability; report if the requested model cannot be used.\n\
-         Monitor every spawned worker with the collaboration tools until it completes or is blocked. Review its results, resolve routine failures, and summarize evidence and outstanding decisions for the captain.\n\
-         Do not claim a worker was created unless a tool confirmed it. If collaboration tools are unavailable, report that limitation instead of claiming delegated work.\n\
-         For parallel file edits, create separate git worktrees with unique branches first; otherwise serialize edits. Never discard existing user changes. Preserve worktrees for review.\n\
-         Do not merge, push, publish or delete branches unless the user task explicitly authorizes it. File writes permitted: {allow_writes}.\n\
-         Wait for your crew and return a final report of assignments, outcomes, tests, remaining issues and worktree paths.\n\nUser task:\n{request}",
-        serde_json::to_string(&crew_model).map_err(|e| e.to_string())?
-    );
+    let prompt = build_firstmate_prompt(&request, &crew_model, allow_writes)?;
     let adapter = adapter_for(CliId::Codex)?;
     let job = make_job(prompt, project.to_string_lossy().into_owned(), allow_writes, Some(model));
     let mut spec = adapter.build_command(&job);
@@ -497,7 +508,30 @@ async fn start_firstmate(
     spawn_run(app, state.inner(), CliId::Codex, adapter, spec, follow_up).await
 }
 
-/// 기존 세션을 이어 후속 메시지를 보낸다. 반환값은 run_id.
+#[tauri::command]
+async fn continue_firstmate(
+    app: AppHandle,
+    state: tauri::State<'_, AppState>,
+    session_id: String,
+    request: String,
+    project_dir: String,
+    allow_writes: bool,
+    model: String,
+) -> Result<u64, String> {
+    if request.trim().is_empty() || session_id.trim().is_empty() {
+        return Err("세션 ID와 후속 작업 요청을 확인하세요".into());
+    }
+    let adapter = adapter_for(CliId::Codex)?;
+    let job = make_job(request, project_dir, allow_writes, Some(model));
+    let mut spec = adapter
+        .build_resume_command(&job, &session_id)
+        .ok_or_else(|| "Codex 세션 재개를 지원하지 않습니다".to_string())?;
+    spec.args.extend(["-c".into(), format!("openai_base_url=\"{}/v1\"", ocx_base_url()?)]);
+    let follow_up = adapter.stdin_follow_up(&job, Some(&session_id));
+    spawn_run(app, state.inner(), CliId::Codex, adapter, spec, follow_up).await
+}
+
+/// 湲곗〈 ?몄뀡???댁뼱 ?꾩냽 硫붿떆吏瑜?蹂대궦?? 諛섑솚媛믪? run_id.
 #[tauri::command]
 async fn continue_job(
     app: AppHandle,
@@ -513,24 +547,24 @@ async fn continue_job(
     let job = make_job(request, project_dir, allow_writes, model);
     let spec = adapter
         .build_resume_command(&job, &session_id)
-        .ok_or_else(|| "이 CLI는 세션 재개를 지원하지 않습니다".to_string())?;
+        .ok_or_else(|| "??CLI???몄뀡 ?ш컻瑜?吏?먰븯吏 ?딆뒿?덈떎".to_string())?;
     let follow_up = adapter.stdin_follow_up(&job, Some(&session_id));
     spawn_run(app, state.inner(), cli, adapter, spec, follow_up).await
 }
 
-/// 실행 중인 run을 중지한다.
+/// ?ㅽ뻾 以묒씤 run??以묒??쒕떎.
 #[tauri::command]
 async fn cancel_run(state: tauri::State<'_, AppState>, run_id: u64) -> Result<bool, String> {
     Ok(state.runner.cancel(run_id).await)
 }
 
-/// 현재 가용성 스냅샷 (라우팅 순서, 비활성 CLI 포함 — enabled 플래그로 구분).
+/// ?꾩옱 媛?⑹꽦 ?ㅻ깄??(?쇱슦???쒖꽌, 鍮꾪솢??CLI ?ы븿 ??enabled ?뚮옒洹몃줈 援щ텇).
 #[tauri::command]
 fn get_availability(state: tauri::State<'_, AppState>) -> Vec<AvailabilitySnapshot> {
     snapshots_of(&state.monitor)
 }
 
-/// 수동 재검사 (상태바 클릭 패널의 버튼, PRD 7장). cli를 생략하면 활성 CLI 전부.
+/// ?섎룞 ?ш???(?곹깭諛??대┃ ?⑤꼸??踰꾪듉, PRD 7??. cli瑜??앸왂?섎㈃ ?쒖꽦 CLI ?꾨?.
 #[tauri::command]
 async fn recheck_availability(
     app: AppHandle,
@@ -546,15 +580,15 @@ async fn recheck_availability(
     Ok(snapshots_of(&monitor))
 }
 
-/// 현재 라우팅 프로필로 지금 추천되는 CLI (PRD 6장: 새 작업마다 최우선 후보부터 재평가)
+/// ?꾩옱 ?쇱슦???꾨줈?꾨줈 吏湲?異붿쿇?섎뒗 CLI (PRD 6?? ???묒뾽留덈떎 理쒖슦???꾨낫遺???ы룊媛)
 #[tauri::command]
 fn pick_cli(state: tauri::State<'_, AppState>) -> Option<CliId> {
     let profile = state.profile.lock().ok()?.clone();
     scheduler::pick_candidate(&profile, &snapshots_of(&state.monitor))
 }
 
-/// 라우팅 우선순위 변경 (상단 CLI 카드 드래그, PRD 6장 라우팅 프로필).
-/// 상태바 순서·추천 CLI도 같은 체인을 따른다. 빠진 등록 CLI는 뒤에 붙이고 모르는 값은 무시한다.
+/// ?쇱슦???곗꽑?쒖쐞 蹂寃?(?곷떒 CLI 移대뱶 ?쒕옒洹? PRD 6???쇱슦???꾨줈??.
+/// ?곹깭諛??쒖꽌쨌異붿쿇 CLI??媛숈? 泥댁씤???곕Ⅸ?? 鍮좎쭊 ?깅줉 CLI???ㅼ뿉 遺숈씠怨?紐⑤Ⅴ??媛믪? 臾댁떆?쒕떎.
 #[tauri::command]
 fn set_routing_chain(
     app: AppHandle,
@@ -569,7 +603,7 @@ fn set_routing_chain(
         }
     }
     if ordered.is_empty() {
-        return Err("우선순위에 등록된 CLI가 하나도 없습니다".into());
+        return Err("?곗꽑?쒖쐞???깅줉??CLI媛 ?섎굹???놁뒿?덈떎".into());
     }
     for c in &registered {
         if !ordered.contains(c) {
@@ -586,7 +620,7 @@ fn set_routing_chain(
     Ok(snapshots_of(&state.monitor))
 }
 
-/// CLI 레지스트리의 사용 여부 (PRD 6장). 비활성 CLI는 상태바·라우팅·probe에서 빠진다. 새로 켠 CLI는 바로 probe.
+/// CLI ?덉??ㅽ듃由ъ쓽 ?ъ슜 ?щ? (PRD 6??. 鍮꾪솢??CLI???곹깭諛붋룸씪?고똿쨌probe?먯꽌 鍮좎쭊?? ?덈줈 耳?CLI??諛붾줈 probe.
 #[tauri::command]
 async fn set_enabled_clis(
     app: AppHandle,
@@ -594,12 +628,12 @@ async fn set_enabled_clis(
     enabled: Vec<CliId>,
 ) -> Result<Vec<AvailabilitySnapshot>, String> {
     if enabled.is_empty() {
-        return Err("최소 한 개의 CLI는 켜 두어야 합니다".into());
+        return Err("At least one CLI must be enabled".into());
     }
     let monitor = Arc::clone(&state.monitor);
     let newly: Vec<CliId> = {
         let Ok(mut m) = monitor.lock() else {
-            return Err("모니터 잠금 실패".into());
+            return Err("紐⑤땲???좉툑 ?ㅽ뙣".into());
         };
         let before = m.clis();
         m.set_enabled(&enabled);
@@ -612,7 +646,7 @@ async fn set_enabled_clis(
     Ok(snapshots_of(&monitor))
 }
 
-/// CLI별 모델 선택지. Claude는 정적 별칭, Codex는 app-server, Gemini는 ACP, OpenCode는 `opencode models`.
+/// CLI蹂?紐⑤뜽 ?좏깮吏. Claude???뺤쟻 蹂꾩묶, Codex??app-server, Gemini??ACP, OpenCode??`opencode models`.
 #[tauri::command]
 async fn list_models(cli: CliId) -> Result<Vec<ModelOption>, String> {
     let adapter = adapter_for(cli)?;
@@ -635,13 +669,13 @@ async fn list_models(cli: CliId) -> Result<Vec<ModelOption>, String> {
                 .await
                 .map_err(|e| e.to_string())?;
             if out.timed_out {
-                return Err("모델 목록 조회 시간 초과".into());
+                return Err("紐⑤뜽 紐⑸줉 議고쉶 ?쒓컙 珥덇낵".into());
             }
             let lines: Vec<String> = out.stdout.lines().map(String::from).collect();
             Ok(adapter.parse_models(&lines))
         }
         ModelListing::Scan { candidates } => {
-            // 200MB급 바이너리를 읽으므로 블로킹 스레드에서
+            // read binary
             let bytes = tokio::task::spawn_blocking(move || {
                 candidates
                     .iter()
@@ -656,13 +690,13 @@ async fn list_models(cli: CliId) -> Result<Vec<ModelOption>, String> {
     }
 }
 
-/// 콘솔형 로그인은 배치 파일을 만들어 새 콘솔 창에서 실행한다 (한글은 콘솔 코드 페이지 문제로 영문만 사용).
+/// 肄섏넄??濡쒓렇?몄? 諛곗튂 ?뚯씪??留뚮뱾????肄섏넄 李쎌뿉???ㅽ뻾?쒕떎 (?쒓?? 肄섏넄 肄붾뱶 ?섏씠吏 臾몄젣濡??곷Ц留??ъ슜).
 fn write_login_script(
     app: &AppHandle,
     cli: CliId,
     spec: &CommandSpec,
 ) -> Result<std::path::PathBuf, String> {
-    let dir = app_data_dir(app).ok_or("앱 데이터 폴더를 찾을 수 없습니다")?;
+    let dir = app_data_dir(app).ok_or("???곗씠???대뜑瑜?李얠쓣 ???놁뒿?덈떎")?;
     let path = dir.join(format!("login-{}.cmd", cli.label().to_ascii_lowercase()));
     let args: Vec<String> = spec
         .args
@@ -675,8 +709,8 @@ fn write_login_script(
             }
         })
         .collect();
-    // 콘솔은 앱의 PATH를 물려받는데 winget 설치 경로(agy 등)가 빠져 있을 수 있다.
-    // 러너와 같은 규칙으로 찾은 실행 파일을 call로 부른다 (.cmd 셔틀도 call이면 제어가 돌아온다).
+    // 肄섏넄? ?깆쓽 PATH瑜?臾쇰젮諛쏅뒗??winget ?ㅼ튂 寃쎈줈(agy ??媛 鍮좎졇 ?덉쓣 ???덈떎.
+    // ?щ꼫? 媛숈? 洹쒖튃?쇰줈 李얠? ?ㅽ뻾 ?뚯씪??call濡?遺瑜몃떎 (.cmd ?뷀???call?대㈃ ?쒖뼱媛 ?뚯븘?⑤떎).
     let program = runner::resolve_program(&spec.program)
         .map(|p| format!("{q}{}{q}", p.display(), q = '"'))
         .unwrap_or_else(|| spec.program.clone());
@@ -690,17 +724,17 @@ fn write_login_script(
     Ok(path)
 }
 
-/// 로그인 콘솔을 기다린 결과
+/// 濡쒓렇??肄섏넄??湲곕떎由?寃곌낵
 enum LoginWait {
-    /// 콘솔이 열린 채로 재검사에서 로그인이 확인됨
+    /// 肄섏넄???대┛ 梨꾨줈 ?ш??ъ뿉??濡쒓렇?몄씠 ?뺤씤??    
     SignedIn,
-    /// 사용자가 콘솔을 닫음
+    /// ?ъ슜?먭? 肄섏넄???レ쓬
     Closed,
-    /// LOGIN_TIMEOUT 초과
+    /// LOGIN_TIMEOUT 珥덇낵
     TimedOut,
 }
 
-/// 재검사 결과가 로그인 필요·불가·미확인이 아니면 로그인된 것으로 본다.
+/// ?ш???寃곌낵媛 濡쒓렇???꾩슂쨌遺덇?쨌誘명솗?몄씠 ?꾨땲硫?濡쒓렇?몃맂 寃껋쑝濡?蹂몃떎.
 fn is_signed_in(monitor: &Arc<Mutex<AvailabilityMonitor>>, cli: CliId) -> bool {
     monitor
         .lock()
@@ -717,7 +751,7 @@ fn is_signed_in(monitor: &Arc<Mutex<AvailabilityMonitor>>, cli: CliId) -> bool {
         .unwrap_or(false)
 }
 
-/// 앱에서 CLI 로그인 흐름을 띄운다 (PRD 6장: 기존 CLI 로그인 방식 그대로). 끝나면 해당 CLI를 재검사한다.
+/// ?깆뿉??CLI 濡쒓렇???먮쫫???꾩슫??(PRD 6?? 湲곗〈 CLI 濡쒓렇??諛⑹떇 洹몃?濡?. ?앸굹硫??대떦 CLI瑜??ш??ы븳??
 #[tauri::command]
 async fn login_cli(
     app: AppHandle,
@@ -727,7 +761,7 @@ async fn login_cli(
     let adapter = adapter_for(cli)?;
     let flow = adapter
         .login_flow()
-        .ok_or_else(|| "이 CLI는 앱에서 로그인을 지원하지 않습니다".to_string())?;
+        .ok_or_else(|| "??CLI???깆뿉??濡쒓렇?몄쓣 吏?먰븯吏 ?딆뒿?덈떎".to_string())?;
     let message = match flow {
         LoginFlow::Console { spec, hint } => {
             let script = write_login_script(&app, cli, &spec)?;
@@ -744,10 +778,10 @@ async fn login_cli(
                 cwd: String::new(),
                 stdin: None,
             };
-            // 콘솔이 열려 있는 동안 주기적으로 재검사한다. 창을 닫지 않으면 10분 타임아웃까지
-            // 빨간불이 유지되던 문제(2026-09-04 Codex 로그인 E2E)를 막기 위함.
+            // 肄섏넄???대젮 ?덈뒗 ?숈븞 二쇨린?곸쑝濡??ш??ы븳?? 李쎌쓣 ?レ? ?딆쑝硫?10遺???꾩븘?껉퉴吏
+            // 鍮④컙遺덉씠 ?좎??섎뜕 臾몄젣(2026-09-04 Codex 濡쒓렇??E2E)瑜?留됯린 ?꾪븿.
             let mut child = runner::spawn_silent(&launcher)
-                .map_err(|e| format!("로그인 창 실행 실패: {e}"))?;
+                .map_err(|e| format!("濡쒓렇??李??ㅽ뻾 ?ㅽ뙣: {e}"))?;
             let monitor = Arc::clone(&state.monitor);
             let started = std::time::Instant::now();
             let mut wait = LoginWait::TimedOut;
@@ -768,11 +802,11 @@ async fn login_cli(
             }
             match wait {
                 LoginWait::SignedIn => {
-                    "로그인이 확인됐습니다. 콘솔 창은 아무 키나 눌러 닫으면 됩니다.".to_string()
+                    "濡쒓렇?몄씠 ?뺤씤?먯뒿?덈떎. 肄섏넄 李쎌? ?꾨Т ?ㅻ굹 ?뚮윭 ?レ쑝硫??⑸땲??".to_string()
                 }
-                LoginWait::Closed => "로그인 창이 닫혔습니다. 상태를 다시 확인했습니다.".to_string(),
+                LoginWait::Closed => "濡쒓렇??李쎌씠 ?ロ삍?듬땲?? ?곹깭瑜??ㅼ떆 ?뺤씤?덉뒿?덈떎.".to_string(),
                 LoginWait::TimedOut => {
-                    format!("{hint} 로그인 창이 아직 열려 있습니다. 끝나면 재검사를 눌러 주세요.")
+                    format!("{hint} 濡쒓렇??李쎌씠 ?꾩쭅 ?대젮 ?덉뒿?덈떎. ?앸굹硫??ш??щ? ?뚮윭 二쇱꽭??")
                 }
             }
         }
@@ -785,19 +819,19 @@ async fn login_cli(
                 LOGIN_TIMEOUT,
             )
             .await
-            .map_err(|e| format!("로그인 실행 실패: {e}"))?;
+            .map_err(|e| format!("濡쒓렇???ㅽ뻾 ?ㅽ뙣: {e}"))?;
             let reply = lines.iter().find(|l| line_has_id(l, done_id));
             match reply.and_then(|l| serde_json::from_str::<serde_json::Value>(l).ok()) {
                 Some(v) if v.get("error").is_some() => {
                     return Err(format!(
-                        "로그인 실패: {} ({hint})",
+                        "濡쒓렇???ㅽ뙣: {} ({hint})",
                         v.pointer("/error/message")
                             .and_then(|m| m.as_str())
-                            .unwrap_or("알 수 없는 오류")
+                            .unwrap_or("?????녿뒗 ?ㅻ쪟")
                     ));
                 }
-                Some(_) => "로그인이 완료됐습니다. 상태를 다시 확인했습니다.".to_string(),
-                None => format!("응답이 없었습니다. {hint}"),
+                Some(_) => "濡쒓렇?몄씠 ?꾨즺?먯뒿?덈떎. ?곹깭瑜??ㅼ떆 ?뺤씤?덉뒿?덈떎.".to_string(),
+                None => format!("?묐떟???놁뿀?듬땲?? {hint}"),
             }
         }
     };
@@ -812,10 +846,10 @@ fn read_admin_token() -> Result<String, String> {
     }
     let path = ocx_home()?.join("admin-api-token");
     let token = std::fs::read_to_string(path)
-        .map_err(|e| format!("Opencodex 토큰 파일을 읽을 수 없습니다: {e}"))?;
+        .map_err(|e| format!("Opencodex ?좏겙 ?뚯씪???쎌쓣 ???놁뒿?덈떎: {e}"))?;
     let token = token.trim().trim_start_matches('\u{feff}');
     if token.is_empty() || token.contains(['\r', '\n']) {
-        return Err("Opencodex 토큰 파일이 비어 있거나 올바르지 않습니다".into());
+        return Err("Opencodex ?좏겙 ?뚯씪??鍮꾩뼱 ?덇굅???щ컮瑜댁? ?딆뒿?덈떎".into());
     }
     Ok(token.to_owned())
 }
@@ -846,21 +880,21 @@ fn parse_ocx_response(response: &str) -> Result<serde_json::Value, String> {
     // curl appends the HTTP status after the body; whitespace in JSON is valid.
     let (body, status) = response
         .rsplit_once('\n')
-        .ok_or("Opencodex HTTP 상태 코드가 없습니다")?;
+        .ok_or("Opencodex HTTP ?곹깭 肄붾뱶媛 ?놁뒿?덈떎")?;
     if status.trim() != "200" {
-        return Err(format!("Opencodex HTTP 오류: {}", status.trim()));
+        return Err(format!("Opencodex HTTP ?ㅻ쪟: {}", status.trim()));
     }
     let value: serde_json::Value = serde_json::from_str(body.trim().trim_start_matches('\u{feff}'))
-        .map_err(|e| format!("Opencodex 응답 형식 오류: {e}"))?;
+        .map_err(|e| format!("Opencodex ?묐떟 ?뺤떇 ?ㅻ쪟: {e}"))?;
     if let Some(error) = value.get("error").filter(|e| !e.is_null()) {
-        return Err(format!("Opencodex 데이터 조회 실패: {error}"));
+        return Err(format!("Opencodex ?곗씠??議고쉶 ?ㅽ뙣: {error}"));
     }
     Ok(value)
 }
 
 fn parse_ocx_usage(response: &str) -> Result<OcxUsage, String> {
     serde_json::from_value(parse_ocx_response(response)?)
-        .map_err(|e| format!("Opencodex 사용량 응답 형식 오류: {e}"))
+        .map_err(|e| format!("Opencodex ?ъ슜???묐떟 ?뺤떇 ?ㅻ쪟: {e}"))
 }
 
 fn summarize_usage_24h(contents: &str, now_ms: u64, history_truncated: bool) -> OcxUsage {
@@ -901,22 +935,22 @@ fn read_ocx_usage_24h() -> Result<OcxUsage, String> {
     use std::io::{Read, Seek, SeekFrom};
     const MAX_READ_BYTES: u64 = 64 * 1024 * 1024;
     let path = ocx_home()?.join("usage.jsonl");
-    let mut file = std::fs::File::open(path).map_err(|e| format!("Opencodex 사용 기록을 읽을 수 없습니다: {e}"))?;
-    let length = file.metadata().map_err(|e| format!("Opencodex 사용 기록 크기 조회 실패: {e}"))?.len();
+    let mut file = std::fs::File::open(path).map_err(|e| format!("Opencodex ?ъ슜 湲곕줉???쎌쓣 ???놁뒿?덈떎: {e}"))?;
+    let length = file.metadata().map_err(|e| format!("Opencodex ?ъ슜 湲곕줉 ?ш린 議고쉶 ?ㅽ뙣: {e}"))?.len();
     let offset = length.saturating_sub(MAX_READ_BYTES);
-    if offset > 0 { file.seek(SeekFrom::Start(offset)).map_err(|e| format!("Opencodex 사용 기록 탐색 실패: {e}"))?; }
+    if offset > 0 { file.seek(SeekFrom::Start(offset)).map_err(|e| format!("Opencodex ?ъ슜 湲곕줉 ?먯깋 ?ㅽ뙣: {e}"))?; }
     let mut bytes = Vec::with_capacity((length - offset).min(MAX_READ_BYTES) as usize);
-    file.read_to_end(&mut bytes).map_err(|e| format!("Opencodex 사용 기록 읽기 실패: {e}"))?;
+    file.read_to_end(&mut bytes).map_err(|e| format!("Opencodex ?ъ슜 湲곕줉 ?쎄린 ?ㅽ뙣: {e}"))?;
     let text = String::from_utf8_lossy(&bytes);
     let text = if offset > 0 { text.split_once('\n').map(|(_, rest)| rest).unwrap_or("") } else { &text };
     let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
-        .map_err(|_| "시스템 시간이 올바르지 않습니다")?.as_millis() as u64;
+        .map_err(|_| "?쒖뒪???쒓컙???щ컮瑜댁? ?딆뒿?덈떎")?.as_millis() as u64;
     Ok(summarize_usage_24h(text, now_ms, offset > 0))
 }
 
 fn ocx_home() -> Result<std::path::PathBuf, String> {
     if let Some(dir) = std::env::var_os("OPENCODEX_HOME").filter(|v| !v.is_empty()) { return Ok(dir.into()); }
-    Ok(std::path::PathBuf::from(std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")).ok_or("사용자 홈 경로를 찾을 수 없습니다")?).join(".opencodex"))
+    Ok(std::path::PathBuf::from(std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")).ok_or("?ъ슜????寃쎈줈瑜?李얠쓣 ???놁뒿?덈떎")?).join(".opencodex"))
 }
 
 fn ocx_base_url() -> Result<String, String> {
@@ -952,7 +986,7 @@ async fn bearer_request_method(url: &str, token: String, timeout: &str, body: Op
 
     #[cfg(windows)]
     let curl = std::path::PathBuf::from(
-        std::env::var_os("SystemRoot").ok_or("Windows 시스템 경로를 찾을 수 없습니다")?,
+        std::env::var_os("SystemRoot").ok_or("Windows ?쒖뒪??寃쎈줈瑜?李얠쓣 ???놁뒿?덈떎")?,
     )
     .join("System32\\curl.exe");
     #[cfg(not(windows))]
@@ -987,30 +1021,30 @@ async fn bearer_request_method(url: &str, token: String, timeout: &str, body: Op
         .stderr(Stdio::piped())
         .kill_on_drop(true)
         .spawn()
-        .map_err(|e| format!("Opencodex curl 실행 실패: {e}"))?;
+        .map_err(|e| format!("Opencodex curl ?ㅽ뻾 ?ㅽ뙣: {e}"))?;
     // Keep the admin token in Rust and out of process command-line arguments.
-    let mut stdin = child.stdin.take().ok_or("curl 입력을 열 수 없습니다")?;
-    if token.contains(['\r', '\n']) { return Err("인증 키 형식 오류".into()); }
+    let mut stdin = child.stdin.take().ok_or("curl ?낅젰???????놁뒿?덈떎")?;
+    if token.contains(['\r', '\n']) { return Err("?몄쬆 ???뺤떇 ?ㅻ쪟".into()); }
     let header = if !token.is_empty() { format!("Authorization: Bearer {token}\n") } else { String::new() };
     stdin
         .write_all(header.as_bytes())
         .await
-        .map_err(|e| format!("curl 인증 헤더 전달 실패: {e}"))?;
+        .map_err(|e| format!("curl ?몄쬆 ?ㅻ뜑 ?꾨떖 ?ㅽ뙣: {e}"))?;
     drop(stdin);
     let output = child
         .wait_with_output()
         .await
-        .map_err(|e| format!("Opencodex curl 응답 수신 실패: {e}"))?;
+        .map_err(|e| format!("Opencodex curl ?묐떟 ?섏떊 ?ㅽ뙣: {e}"))?;
     if !output.status.success() {
         return Err(format!(
-            "Opencodex 연결 실패 (curl {}): {}",
+            "Opencodex ?곌껐 ?ㅽ뙣 (curl {}): {}",
             output.status,
             if token.is_empty() { String::from_utf8_lossy(&output.stderr).trim().to_owned() }
             else { String::from_utf8_lossy(&output.stderr).trim().replace(&token, "[redacted]") }
         ));
     }
     let response =
-        String::from_utf8(output.stdout).map_err(|_| "Opencodex 응답이 UTF-8 형식이 아닙니다")?;
+        String::from_utf8(output.stdout).map_err(|_| "Opencodex ?묐떟??UTF-8 ?뺤떇???꾨떃?덈떎")?;
     Ok(response)
 }
 
@@ -1018,14 +1052,14 @@ async fn bearer_request_method(url: &str, token: String, timeout: &str, body: Op
 async fn get_ocx_usage(range: Option<String>) -> Result<OcxUsage, String> {
     let range = range.as_deref().unwrap_or("24h");
     if range == "24h" { return read_ocx_usage_24h(); }
-    if !["7d", "30d"].contains(&range) { return Err("지원하지 않는 사용량 기간".into()); }
+    if !["7d", "30d"].contains(&range) { return Err("吏?먰븯吏 ?딅뒗 ?ъ슜??湲곌컙".into()); }
     parse_ocx_usage(&ocx_request(&format!("/api/usage?range={range}"), true, "8").await?)
 }
 
 #[tauri::command]
 async fn get_ocx_health() -> Result<serde_json::Value, String> {
     let health = parse_ocx_response(&ocx_request("/healthz", false, "3").await?)?;
-    if health.get("status").and_then(|v| v.as_str()) != Some("ok") { return Err("Opencodex 상태 확인 실패".into()); }
+    if health.get("status").and_then(|v| v.as_str()) != Some("ok") { return Err("Opencodex ?곹깭 ?뺤씤 ?ㅽ뙣".into()); }
     Ok(serde_json::json!({"pid": health["pid"], "version": health["version"], "url": ocx_base_url()?}))
 }
 
@@ -1038,10 +1072,10 @@ async fn get_ocx_quotas() -> Result<serde_json::Value, String> {
     )?;
     let quota = parse_ocx_response(&quota)?;
     let providers = parse_ocx_response(&providers)?;
-    let names: Vec<_> = providers.as_array().ok_or("제공자 목록 형식 오류")?.iter()
+    let names: Vec<_> = providers.as_array().ok_or("?쒓났??紐⑸줉 ?뺤떇 ?ㅻ쪟")?.iter()
         .filter(|p| p.get("disabled").and_then(|v| v.as_bool()) != Some(true))
         .filter_map(|p| p.get("name").and_then(|v| v.as_str())).collect();
-    if !quota["reports"].is_array() { return Err("한도 응답 형식 오류".into()); }
+    if !quota["reports"].is_array() { return Err("?쒕룄 ?묐떟 ?뺤떇 ?ㅻ쪟".into()); }
     let mut reports = quota["reports"].as_array().unwrap().clone();
     let mut errors = serde_json::Map::new();
     for provider in providers.as_array().unwrap().iter().filter(|p| names.contains(&p["name"].as_str().unwrap_or(""))) {
@@ -1059,14 +1093,14 @@ async fn get_ocx_quotas() -> Result<serde_json::Value, String> {
 #[tauri::command]
 async fn get_ocx_providers() -> Result<serde_json::Value, String> {
     let raw = parse_ocx_response(&ocx_request("/api/providers", true, "8").await?)?;
-    let rows = raw.as_array().ok_or("제공자 목록 형식 오류")?.iter().map(|p| serde_json::json!({
+    let rows = raw.as_array().ok_or("?쒓났??紐⑸줉 ?뺤떇 ?ㅻ쪟")?.iter().map(|p| serde_json::json!({
         "name": p["name"], "label": p["label"], "disabled": p["disabled"],
         "authMode": p["authMode"], "hasApiKey": p["hasApiKey"],
     })).collect::<Vec<_>>();
     Ok(serde_json::json!({ "providers": rows }))
 }
 
-/// Opencodex가 현재 노출하는 provider/model 카탈로그를 반환한다.
+/// Opencodex媛 ?꾩옱 ?몄텧?섎뒗 provider/model 移댄깉濡쒓렇瑜?諛섑솚?쒕떎.
 #[tauri::command]
 async fn get_ocx_models() -> Result<serde_json::Value, String> {
     parse_ocx_response(&ocx_request("/api/models", true, "8").await?)
@@ -1082,7 +1116,7 @@ struct OcxAutoHandoffTarget {
 #[tauri::command]
 async fn configure_ocx_auto_handoff(targets: Vec<OcxAutoHandoffTarget>) -> Result<serde_json::Value, String> {
     if targets.len() < 2 || targets.len() > 16 {
-        return Err("자동 전환에는 2개 이상의 AI 제공자가 필요합니다".into());
+        return Err("At least 2 AI providers are required".into());
     }
     let mut seen = std::collections::HashSet::new();
     let targets = targets.into_iter().map(|target| {
@@ -1090,10 +1124,10 @@ async fn configure_ocx_auto_handoff(targets: Vec<OcxAutoHandoffTarget>) -> Resul
         let model = target.model.trim();
         if provider.is_empty() || model.is_empty() || provider.len() > 128 || model.len() > 256
             || provider.contains(['\r', '\n']) || model.contains(['\r', '\n']) {
-            return Err("자동 전환 대상 형식이 올바르지 않습니다".to_string());
+            return Err("?먮룞 ?꾪솚 ????뺤떇???щ컮瑜댁? ?딆뒿?덈떎".to_string());
         }
         if !seen.insert(provider.to_owned()) {
-            return Err("자동 전환 제공자가 중복되었습니다".to_string());
+            return Err("Duplicate AI provider".to_string());
         }
         Ok(serde_json::json!({ "provider": provider, "model": model, "weight": 1 }))
     }).collect::<Result<Vec<_>, _>>()?;
@@ -1106,7 +1140,7 @@ async fn configure_ocx_auto_handoff(targets: Vec<OcxAutoHandoffTarget>) -> Resul
         read_admin_token()?, "30", Some(body), "PUT",
     ).await?;
     let value = parse_ocx_response(&response)?;
-    let model = value.get("model").and_then(|v| v.as_str()).ok_or("자동 전환 모델 응답 형식 오류")?;
+    let model = value.get("model").and_then(|v| v.as_str()).ok_or("?먮룞 ?꾪솚 紐⑤뜽 ?묐떟 ?뺤떇 ?ㅻ쪟")?;
     Ok(serde_json::json!({ "model": model }))
 }
 
@@ -1118,7 +1152,7 @@ async fn get_ocx_accounts() -> Result<serde_json::Value, String> {
     )?;
     let accounts = parse_ocx_response(&accounts)?;
     let active = parse_ocx_response(&active)?;
-    let rows = accounts["accounts"].as_array().ok_or("계정 목록 응답 형식 오류")?;
+    let rows = accounts["accounts"].as_array().ok_or("怨꾩젙 紐⑸줉 ?묐떟 ?뺤떇 ?ㅻ쪟")?;
     // Only presentation fields cross IPC; never forward credentials or auth config.
     let rows: Vec<_> = rows.iter().map(|row| serde_json::json!({
         "id": row["id"], "alias": row["alias"], "email": row["email"],
@@ -1133,7 +1167,7 @@ async fn get_ocx_accounts() -> Result<serde_json::Value, String> {
 async fn consume_codex_reset_credit(account_id: String) -> Result<serde_json::Value, String> {
     let account_id = account_id.trim();
     if account_id.is_empty() || account_id.len() > 128 || account_id.contains(['\r', '\n']) {
-        return Err("계정 식별자가 올바르지 않습니다".into());
+        return Err("怨꾩젙 ?앸퀎?먭? ?щ컮瑜댁? ?딆뒿?덈떎".into());
     }
     let response = ocx_post(
         "/api/codex-auth/reset-credits/consume",
@@ -1168,12 +1202,12 @@ fn list_project_tree(project_dir: String) -> Result<Vec<serde_json::Value>, Stri
 
 #[tauri::command]
 fn read_project_file(project_dir: String, relative_path: String) -> Result<String, String> {
-    let root = std::fs::canonicalize(&project_dir).map_err(|_| "프로젝트 폴더를 확인하세요")?;
-    let path = std::fs::canonicalize(root.join(&relative_path)).map_err(|_| "파일을 읽을 수 없습니다")?;
-    if !path.starts_with(&root) || !path.is_file() { return Err("프로젝트 폴더 안의 파일만 열 수 있습니다".into()); }
-    let metadata = std::fs::metadata(&path).map_err(|_| "파일 정보를 읽을 수 없습니다")?;
-    if metadata.len() > 1_000_000 { return Err("1MB보다 큰 파일은 미리볼 수 없습니다".into()); }
-    std::fs::read_to_string(path).map_err(|_| "텍스트 파일만 미리볼 수 있습니다".into())
+    let root = std::fs::canonicalize(&project_dir).map_err(|_| "Invalid project directory")?;
+    let path = std::fs::canonicalize(root.join(&relative_path)).map_err(|_| "?뚯씪???쎌쓣 ???놁뒿?덈떎")?;
+    if !path.starts_with(&root) || !path.is_file() { return Err("?꾨줈?앺듃 ?대뜑 ?덉쓽 ?뚯씪留??????덉뒿?덈떎".into()); }
+    let metadata = std::fs::metadata(&path).map_err(|_| "?뚯씪 ?뺣낫瑜??쎌쓣 ???놁뒿?덈떎")?;
+    if metadata.len() > 1_000_000 { return Err("1MB蹂대떎 ???뚯씪? 誘몃━蹂????놁뒿?덈떎".into()); }
+    std::fs::read_to_string(path).map_err(|_| "?띿뒪???뚯씪留?誘몃━蹂????덉뒿?덈떎".into())
 }
 
 #[tauri::command]
@@ -1185,22 +1219,22 @@ fn highlight_project_file(project_dir: String, relative_path: String) -> Result<
         .and_then(|ext| syntax_set.find_syntax_by_extension(ext))
         .unwrap_or_else(|| syntax_set.find_syntax_plain_text());
     syntect::html::highlighted_html_for_string(&content, &syntax_set, syntax, &themes.themes["base16-ocean.dark"])
-        .map_err(|e| format!("문법 강조 실패: {e}"))
+        .map_err(|e| format!("臾몃쾿 媛뺤“ ?ㅽ뙣: {e}"))
 }
 
 #[tauri::command]
 fn write_project_file(project_dir: String, relative_path: String, content: String) -> Result<(), String> {
-    let root = std::fs::canonicalize(&project_dir).map_err(|_| "프로젝트 폴더를 확인하세요")?;
-    let path = std::fs::canonicalize(root.join(&relative_path)).map_err(|_| "파일을 찾을 수 없습니다")?;
-    if !path.starts_with(&root) || !path.is_file() { return Err("프로젝트 폴더 안의 파일만 저장할 수 있습니다".into()); }
-    if content.len() > 2_000_000 { return Err("2MB보다 큰 파일은 저장할 수 없습니다".into()); }
-    std::fs::write(path, content).map_err(|e| format!("파일 저장 실패: {e}"))
+    let root = std::fs::canonicalize(&project_dir).map_err(|_| "Invalid project directory")?;
+    let path = std::fs::canonicalize(root.join(&relative_path)).map_err(|_| "?뚯씪??李얠쓣 ???놁뒿?덈떎")?;
+    if !path.starts_with(&root) || !path.is_file() { return Err("?꾨줈?앺듃 ?대뜑 ?덉쓽 ?뚯씪留???ν븷 ???덉뒿?덈떎".into()); }
+    if content.len() > 2_000_000 { return Err("2MB蹂대떎 ???뚯씪? ??ν븷 ???놁뒿?덈떎".into()); }
+    std::fs::write(path, content).map_err(|e| format!("?뚯씪 ????ㅽ뙣: {e}"))
 }
 
 fn validate_crew_mode(mode: &str) -> Result<(), String> {
     match mode {
         "v1" | "default" | "v2" => Ok(()),
-        _ => Err("지원하지 않는 협업 방식입니다".into()),
+        _ => Err("Unsupported crew mode".into()),
     }
 }
 
@@ -1219,6 +1253,33 @@ async fn set_crew_mode(mode: String) -> Result<serde_json::Value, String> {
 #[cfg(test)]
 mod ocx_tests {
     use super::*;
+
+    #[test]
+    fn firstmate_prompt_carries_engineering_workflow_and_constraints() {
+        let prompt = build_firstmate_prompt(
+            "Fix the stale run event bug",
+            "provider/model\"with-quote",
+            false,
+        )
+        .unwrap();
+
+        for expected in [
+            "Explore first",
+            "Proactively assemble and spawn a subagent crew",
+            "tools.multi_agent_v1__spawn_agent",
+            "Align with the captain before modifying files",
+            "acceptance criteria",
+            "dependency graph",
+            "tdd skill",
+            "code-review skill",
+            "repository standards",
+            "File writes permitted: false",
+            "User task:\nFix the stale run event bug",
+        ] {
+            assert!(prompt.contains(expected), "missing prompt contract: {expected}");
+        }
+        assert!(prompt.contains(r#"provider/model\"with-quote"#));
+    }
 
     #[test]
     fn rolling_24h_usage_excludes_old_future_and_invalid_rows() {
@@ -1258,7 +1319,8 @@ mod ocx_tests {
     #[test]
     fn usage_accepts_whitespace_and_preserves_zero_counts() {
         let usage = parse_ocx_usage(
-            "\u{feff} {\"summary\":{\"estimatedCostUsd\":0,\"totalTokens\":0,\"requests\":0}} \r\n\n200",
+            "\u{feff} {\"summary\":{\"estimatedCostUsd\":0,\"totalTokens\":0,\"requests\":0}} \r
+\n200",
         ).unwrap();
         assert_eq!(usage.summary.total_tokens, 0);
         assert_eq!(usage.summary.estimated_cost_usd, Some(0.0));
@@ -1313,7 +1375,7 @@ mod ocx_tests {
 pub fn run() {
     let profile = RoutingProfile::default();
     let registered: Vec<CliId> = adapters::registry().iter().map(|a| a.id()).collect();
-    // 상태바 순서는 라우팅 프로필 순서를 따른다 (PRD 7장). 어댑터가 없는 후보는 제외
+    // ?곹깭諛??쒖꽌???쇱슦???꾨줈???쒖꽌瑜??곕Ⅸ??(PRD 7??. ?대뙌?곌? ?녿뒗 ?꾨낫???쒖쇅
     let ordered: Vec<CliId> = profile
         .chain
         .iter()
@@ -1337,13 +1399,13 @@ pub fn run() {
                 let _ = window.show();
                 let _ = window.set_focus();
             }
-            // 이전 실행의 스냅샷 복원 (리셋이 지난 윈도우는 import에서 폐기, 사용 여부도 복원)
+            // ?댁쟾 ?ㅽ뻾???ㅻ깄??蹂듭썝 (由ъ뀑??吏???덈룄?곕뒗 import?먯꽌 ?먭린, ?ъ슜 ?щ???蹂듭썝)
             let stored = load_store(&handle);
             if let Ok(mut m) = monitor.lock() {
                 m.import(stored, now());
             }
             emit_availability(&handle, &monitor);
-            // 가용성 모니터 루프: 시작 시 활성 CLI 전체 probe → 30초마다 쿨다운 만료·재검사 예정 확인
+            // 媛?⑹꽦 紐⑤땲??猷⑦봽: ?쒖옉 ???쒖꽦 CLI ?꾩껜 probe ??30珥덈쭏??荑⑤떎??留뚮즺쨌?ш????덉젙 ?뺤씤
             tauri::async_runtime::spawn(async move {
                 let all = monitor.lock().map(|m| m.clis()).unwrap_or_default();
                 run_probes(&handle, &monitor, &all).await;
@@ -1364,6 +1426,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             start_job,
             start_firstmate,
+            continue_firstmate,
             send_chat,
             continue_job,
             cancel_run,
@@ -1388,10 +1451,35 @@ pub fn run() {
             read_project_file,
             highlight_project_file,
             write_project_file,
+            send_system_notification,
             get_crew_mode,
             set_crew_mode,
             resources::get_system_resources
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+#[tauri::command]
+fn send_system_notification(title: String, body: String) {
+    std::thread::spawn(move || {
+        use std::process::Command;
+        let clean_title: String = title.chars().map(|c| match c { '"' | '\'' | '\x60' | '$' | '\r' | '\n' => ' ', _ => c }).take(100).collect();
+        let clean_body: String = body.chars().map(|c| match c { '"' | '\'' | '\x60' | '$' | '\r' | '\n' => ' ', _ => c }).take(200).collect();
+        let script = format!(
+            "[void] [System.Reflection.Assembly]::LoadWithPartialName('System.Windows.Forms'); \
+             $notify = New-Object System.Windows.Forms.NotifyIcon; \
+             $notify.Icon = [System.Drawing.SystemIcons]::Information; \
+             $notify.BalloonTipTitle = \"{}\"; \
+             $notify.BalloonTipText = \"{}\"; \
+             $notify.Visible = $true; \
+             $notify.ShowBalloonTip(5000); \
+             Start-Sleep -Seconds 6; \
+             $notify.Dispose();",
+            clean_title,
+            clean_body
+        );
+        let _ = Command::new("powershell")
+            .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+            .output();
+    });
 }

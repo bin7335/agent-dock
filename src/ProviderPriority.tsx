@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { Telemetry } from "./useTelemetry";
 import type { ModelOption } from "./types";
-import { quotaWindows, remaining } from "./DockPanels";
+import { quotaWindows, providerSummaryPercent } from "./DockPanels";
 
 const KEY = "agentdock.providerPriority";
 const MODEL_KEY = "agentdock.providerTargetModels";
@@ -105,8 +105,8 @@ export function ProviderPriority({ telemetry, enabled, models, currentModel, onR
     {(providerData || quotaData) && !order.length && <p className="muted">인식된 활성 제공자가 없습니다. 계정 관리에서 연결하세요.</p>}
     <div className="provider-priority-list">{order.map((id, index) => {
       const report = quotaData?.reports.find(row => row.provider === id);
-      const values = quotaWindows(report).map(w => remaining(w)).filter((value): value is number => value !== null);
-      const left = values.length ? Math.min(...values) : null;
+      const pSummary = providerSummaryPercent(quotaWindows(report));
+      const left = pSummary.percent;
       const stale = !!quotaError || !!report && Date.now() - report.updatedAt > 600000;
       const options = optionsFor(id);
       return <article key={id} className={`provider-priority-card${dragging === id ? " dragging" : ""}${over === id && dragging !== id ? " drag-over" : ""}`}

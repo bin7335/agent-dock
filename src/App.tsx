@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactElement } from "react";
+﻿import { useEffect, useRef, useState, type ReactElement } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
@@ -202,23 +202,28 @@ function applyEvent(conv: Conversation, ev: RunEvent): Conversation {
       }
       return conv;
     }
-    case "process_exited": {
-      let next: Conversation;
-      if (event.cancelled) {
-        next = { ...conv, state: "idle", activeRunId: null, items: [...items, item("system", "중지됨", run_id, cli)] };
-      } else {
-        const abnormal = event.code !== null && event.code !== 0;
-        const failed = conv.state === "failed" || abnormal;
-        next = {
-          ...conv,
-          state: failed ? "failed" : "idle",
-          activeRunId: null,
-          items:
-            abnormal && conv.state !== "failed"
-              ? [...items, item("error", `프로세스 비정상 종료 (code ${event.code})`, run_id, cli)]
-              : items,
-        };
-      }
+   case "process_exited": {
+     const resolvedItems = items.map((i) =>
+       i.perm && i.perm.resolved === null
+         ? { ...i, perm: { ...i.perm, resolved: { allowed: false, auto: false } } }
+         : i,
+     );
+     let next: Conversation;
+     if (event.cancelled) {
+       next = { ...conv, state: "idle", activeRunId: null, items: [...resolvedItems, item("system", "중지됨", run_id, cli)] };
+     } else {
+       const abnormal = event.code !== null && event.code !== 0;
+       const failed = conv.state === "failed" || abnormal;
+       next = {
+         ...conv,
+         state: failed ? "failed" : "idle",
+         activeRunId: null,
+         items:
+           abnormal && conv.state !== "failed"
+             ? [...resolvedItems, item("error", `프로세스 비정상 종료 (code ${event.code})`, run_id, cli)]
+             : resolvedItems,
+       };
+     }
       // 이 CLI의 세션은 여기까지의 대화를 알고 있다
       const sess = sessionOf(next, cli);
       return { ...next, sessions: { ...next.sessions, [cli]: { ...sess, syncedUpTo: next.items.length } } };
@@ -363,16 +368,25 @@ function App() {
     const un = listen<RunEvent>("agent-event", ({ payload }) => {
       const { run_id } = payload;
       // invoke가 run_id를 돌려주기 전에 도착한 이벤트는 보류했다가 매핑 후 재생한다.
-      const convId = runMapRef.current[run_id];
-      if (convId === undefined) {
-        const queue = pendingRef.current[run_id] ?? [];
-        queue.push(payload);
-        pendingRef.current[run_id] = queue;
-        return;
+     const convId = runMapRef.current[run_id];
+     if (convId === undefined) {
+        if (payload.event.kind === "process_exited") {
+          delete pendingRef.current[run_id];
+          return;
+        }
+       const queue = pendingRef.current[run_id] ?? [];
+       if (queue.length < 100) {
+         queue.push(payload);
+       }
+       pendingRef.current[run_id] = queue;
+       return;
+     }
+     dispatch(convId, payload);
+      if (payload.event.kind === "process_exited") {
+        delete runMapRef.current[run_id];
       }
-      dispatch(convId, payload);
-    });
-    return () => {
+   });
+   return () => {
       un.then((f) => f());
     };
   }, []);
@@ -779,7 +793,7 @@ function App() {
         </div>
       </div>
       {!isExpanded && <div className="compact-body"><UsagePanel telemetry={telemetry} compact range={usageRange} onRange={setUsageRange} /><ResourcePanel telemetry={telemetry} compact /></div>}
-      <div className="firstmate-view" hidden={!isExpanded || tab !== "crew"}><CrewPanel projectDir={projectDir} onBusy={setCrewBusy} /></div>
+      <div className="firstmate-view" hidden={!isExpanded || tab !== "crew"}><CrewPanel projectDir={projectDir} onProjectDirChange={setProjectDir} onBusy={setCrewBusy} /></div>
       <>
         <nav className="dock-tabs" aria-label="위젯 메뉴">{([['overview', '개요'], ['chat', '대화'], ['settings', '설정']] as const).map(([key, label]) => <button key={key} className={tab === key ? 'active' : ''} aria-current={tab === key ? 'page' : undefined} onClick={() => { setTab(key); setQuotaActive(null); if (key === "chat") setIsExpanded(true); }}>{label}{key === 'chat' && pendingTotal > 0 && <span className="count-badge">{pendingTotal}</span>}</button>)}<button className={tab === "crew" ? "active" : ""} onClick={() => { setTab("crew"); setQuotaActive(null); }}>Crew</button><button className="refresh-button" onClick={() => setRefresh(v => v + 1)} title="연결·사용량·한도 새로고침" aria-label="새로고침">↻</button></nav>
         <div className={`app tab-${tab}`}>

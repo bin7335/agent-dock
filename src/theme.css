@@ -106,3 +106,326 @@
 .widget-container .account-quota .quota-window { border-color:color-mix(in srgb,var(--line) 70%,transparent); }
 .widget-container .account-quota .data-notice { color:var(--warning); }
 .theme-light .code-highlight,.theme-system .code-highlight { color:#26313c; }
+
+/* Light theme overrides for newly added & hardcoded cards */
+.widget-container.theme-light :is(
+  .provider-priority,
+  .provider-priority-card,
+  .pipeline-step,
+  .crew-compose-card,
+  .crew-subtasks,
+  .crew-subagents,
+  .crew-file-changes,
+  .crew-agent-chip,
+  .quick-chip,
+  .folder-pick-btn,
+  .crew-task,
+  .project-input-row input,
+  .crew-compose input,
+  .crew-models select
+) {
+  background: var(--surface-card) !important;
+  color: var(--text-main) !important;
+  border-color: var(--line) !important;
+}
+
+.widget-container.theme-light :is(.step-body strong, .compose-top, .quick-label, .crew-subtasks strong, .crew-subagents strong) {
+  color: var(--text-main) !important;
+}
+
+.widget-container.theme-light .provider-priority {
+  background: var(--surface-panel) !important;
+}
+
+.widget-container.theme-light .provider-priority-card {
+  background: #ffffff !important;
+}
+
+.widget-container.theme-light .provider-priority-card :is(.provider-name, .cli-name, span) {
+  color: var(--text-main) !important;
+}
+
+.widget-container.theme-light .pipeline-step {
+  background: #ffffff !important;
+}
+
+.widget-container.theme-light .pipeline-step.active {
+  background: #eef8e8 !important;
+  border-color: var(--accent) !important;
+}
+
+.widget-container.theme-light .step-num {
+  background: #e4e9f0 !important;
+  color: var(--muted) !important;
+}
+
+.widget-container.theme-light .pipeline-step.active .step-num {
+  background: var(--accent) !important;
+  color: #ffffff !important;
+}
+
+.widget-container.theme-light .crew-compose-card {
+  background: var(--surface-panel) !important;
+}
+
+.widget-container.theme-light .project-input-row input,
+.widget-container.theme-light .crew-compose input,
+.widget-container.theme-light .crew-followup input {
+  background: #ffffff !important;
+  color: var(--text-main) !important;
+}
+
+.widget-container.theme-light .location-name {
+  color: #176a50 !important;
+}
+
+.widget-container.theme-light .location-full {
+  color: var(--muted) !important;
+}
+
+.widget-container.theme-light .quick-chip {
+  background: #ffffff !important;
+  color: var(--muted) !important;
+}
+
+.widget-container.theme-light .quick-chip:hover {
+  background: #eef8e8 !important;
+  color: var(--accent) !important;
+  border-color: var(--accent) !important;
+}
+
+.widget-container.theme-light .crew-submit-btn {
+  background: #e2e8f0 !important;
+  color: #64748b !important;
+}
+
+.widget-container.theme-light .crew-submit-btn.ready {
+  background: var(--accent) !important;
+  color: #ffffff !important;
+}
+
+.widget-container.theme-light .folder-pick-btn {
+  background: #ffffff !important;
+  color: var(--text-main) !important;
+}
+
+.widget-container.theme-light .folder-pick-btn:hover {
+  border-color: var(--accent) !important;
+  color: var(--accent) !important;
+}
+
+.widget-container.theme-light :is(.connection-card button, .dashboard-section button) {
+  background: #ffffff !important;
+  color: var(--text-main) !important;
+  border-color: var(--line) !important;
+}
+
+@media (prefers-color-scheme: light) {
+  .widget-container.theme-system :is(
+    .provider-priority,
+    .provider-priority-card,
+    .pipeline-step,
+    .crew-compose-card,
+    .crew-subtasks,
+    .crew-subagents,
+    .crew-file-changes,
+    .crew-agent-chip,
+    .quick-chip,
+    .folder-pick-btn,
+    .crew-task,
+    .project-input-row input,
+    .crew-compose input,
+    .crew-models select
+  ) {
+    background: var(--surface-card) !important;
+    color: var(--text-main) !important;
+    border-color: var(--line) !important;
+  }
+
+  .widget-container.theme-system :is(.step-body strong, .compose-top, .quick-label, .crew-subtasks strong, .crew-subagents strong) {
+    color: var(--text-main) !important;
+  }
+
+  .widget-container.theme-system .provider-priority {
+    background: var(--surface-panel) !important;
+  }
+
+  .widget-container.theme-system .provider-priority-card {
+    background: #ffffff !important;
+  }
+
+  .widget-container.theme-system .provider-priority-card :is(.provider-name, .cli-name, span) {
+    color: var(--text-main) !important;
+  }
+
+  .widget-container.theme-system .pipeline-step {
+    background: #ffffff !important;
+  }
+
+  .widget-container.theme-system .pipeline-step.active {
+    background: #eef8e8 !important;
+    border-color: var(--accent) !important;
+  }
+
+  .widget-container.theme-system .step-num {
+    background: #e4e9f0 !important;
+    color: var(--muted) !important;
+  }
+
+  .widget-container.theme-system .pipeline-step.active .step-num {
+    background: var(--accent) !important;
+    color: #ffffff !important;
+  }
+
+  .widget-container.theme-system .crew-compose-card {
+    background: var(--surface-panel) !important;
+  }
+
+  .widget-container.theme-system .project-input-row input,
+  .widget-container.theme-system .crew-compose input,
+  .widget-container.theme-system .crew-followup input {
+    background: #ffffff !important;
+    color: var(--text-main) !important;
+  }
+
+  .widget-container.theme-system .location-name {
+    color: #176a50 !important;
+  }
+
+  .widget-container.theme-system .location-full {
+    color: var(--muted) !important;
+  }
+
+  .widget-container.theme-system .quick-chip {
+    background: #ffffff !important;
+    color: var(--muted) !important;
+  }
+
+  .widget-container.theme-system .quick-chip:hover {
+    background: #eef8e8 !important;
+    color: var(--accent) !important;
+    border-color: var(--accent) !important;
+  }
+
+  .widget-container.theme-system .crew-submit-btn {
+    background: #e2e8f0 !important;
+    color: #64748b !important;
+  }
+
+  .widget-container.theme-system .crew-submit-btn.ready {
+    background: var(--accent) !important;
+    color: #ffffff !important;
+  }
+
+  .widget-container.theme-system .folder-pick-btn {
+    background: #ffffff !important;
+    color: var(--text-main) !important;
+  }
+
+  .widget-container.theme-system .folder-pick-btn:hover {
+    border-color: var(--accent) !important;
+    color: var(--accent) !important;
+  }
+
+  .widget-container.theme-system :is(.connection-card button, .dashboard-section button) {
+    background: #ffffff !important;
+    color: var(--text-main) !important;
+    border-color: var(--line) !important;
+  }
+}
+
+/* Light theme comprehensive readability fixes */
+.widget-container.theme-light,
+.widget-container.theme-system {
+  /* Subtle panel backgrounds instead of pure flat glare */
+  --surface-panel: #f0f3f6;
+  --surface-card: #ffffff;
+  --surface-input: #ffffff;
+  --line: #cbd5e1;
+}
+
+/* Priority badge (numbers inside black circles) */
+.widget-container.theme-light .prio,
+.widget-container.theme-system .prio {
+  background: #e2e8f0 !important;
+  color: #334155 !important;
+  border: 1px solid #cbd5e1 !important;
+  font-weight: 700 !important;
+}
+
+/* Arrow buttons (up/down reorder buttons) */
+.widget-container.theme-light .provider-priority-actions button,
+.widget-container.theme-system .provider-priority-actions button {
+  background: #ffffff !important;
+  color: #334155 !important;
+  border: 1px solid #cbd5e1 !important;
+}
+.widget-container.theme-light .provider-priority-actions button:hover:not(:disabled),
+.widget-container.theme-system .provider-priority-actions button:hover:not(:disabled) {
+  border-color: var(--accent) !important;
+  color: var(--accent) !important;
+}
+.widget-container.theme-light .provider-priority-actions button:disabled,
+.widget-container.theme-system .provider-priority-actions button:disabled {
+  opacity: 0.35 !important;
+  background: #f1f5f9 !important;
+  color: #94a3b8 !important;
+}
+
+/* Theme selector toggle buttons (active buttons had glaring white-green text on near-white) */
+.widget-container.theme-light .theme-buttons button,
+.widget-container.theme-system .theme-buttons button {
+  background: #ffffff !important;
+  color: #64748b !important;
+  border: 1px solid #cbd5e1 !important;
+  font-weight: 500;
+}
+.widget-container.theme-light .theme-buttons button.active,
+.widget-container.theme-system .theme-buttons button.active {
+  background: #e9f5e3 !important;
+  color: #1e5a14 !important;
+  border-color: #326f22 !important;
+  font-weight: 700 !important;
+  box-shadow: inset 0 0 0 1px #326f22 !important;
+}
+
+/* Toggle Switch Badge (켜짐/꺼짐 버튼) */
+.widget-container.theme-light .preference-card button,
+.widget-container.theme-system .preference-card button {
+  border: 1px solid #326f22 !important;
+  background: #e9f5e3 !important;
+  color: #1e5a14 !important;
+  font-weight: 700 !important;
+}
+
+/* Dropdown Select Elements */
+.widget-container.theme-light select,
+.widget-container.theme-system select {
+  background: #ffffff !important;
+  color: #1e293b !important;
+  border: 1px solid #cbd5e1 !important;
+}
+.widget-container.theme-light select:focus,
+.widget-container.theme-system select:focus {
+  border-color: var(--accent) !important;
+}
+
+/* Section Card Outlines (연결 및 설정, 한도 도달 자동 전환, AI 우선순위, 화면 설정) */
+.widget-container.theme-light .connection-card,
+.widget-container.theme-light .preference-card,
+.widget-container.theme-light .provider-priority,
+.widget-container.theme-system .connection-card,
+.widget-container.theme-system .preference-card,
+.widget-container.theme-system .provider-priority {
+  border: 1px solid #cbd5e1 !important;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05) !important;
+}
+
+/* Subtext & helper labels */
+.widget-container.theme-light :is(.route-status, .provider-priority-main > span, .settings-help, small) {
+  color: #64748b !important;
+}
+.widget-container.theme-light .route-status.ok {
+  color: #1e5a14 !important;
+  font-weight: 600 !important;
+}

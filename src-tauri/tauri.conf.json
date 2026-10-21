@@ -4,8 +4,8 @@
   "version": "0.1.0",
   "identifier": "com.user.agent-dock",
   "build": {
-    "beforeDevCommand": "npm run dev",
-    "devUrl": "http://localhost:1420",
+    "beforeDevCommand": "node scripts/serve.cjs",
+    "devUrl": "http://localhost:1428",
     "beforeBuildCommand": "npm run build",
     "frontendDist": "../dist"
   },
@@ -18,8 +18,8 @@
         "resizable": true,
         "minWidth": 320,
         "minHeight": 54,
-        "decorations": false,
-        "transparent": true,
+        "decorations": true,
+        "transparent": false,
         "alwaysOnTop": true,
         "center": true,
         "dragDropEnabled": false

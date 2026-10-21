@@ -267,16 +267,39 @@ impl CliAdapter for CodexAdapter {
                         tool: "command".into(),
                         detail: text(&item, "command"),
                     }],
-                    Some("collabAgentToolCall") => vec![AgentEvent::ToolUse {
-                        tool: format!("crew/{}", text(&item, "tool")),
-                        detail: item.to_string(),
-                    }],
+                    Some("collabAgentToolCall") => {
+                        let tool = text(&item, "tool");
+                        if tool == "wait" {
+                            vec![]
+                        } else {
+                            vec![AgentEvent::ToolUse {
+                                tool: format!("crew/{tool}"),
+                                detail: item.to_string(),
+                            }]
+                        }
+                    }
                     _ => vec![],
                 }
             }
             "item/completed" => {
                 let item = params.get("item").cloned().unwrap_or(Value::Null);
                 match item.get("type").and_then(Value::as_str) {
+                    Some("collabAgentToolCall") => {
+                        let tool = text(&item, "tool");
+                        if tool == "wait" {
+                            vec![]
+                        } else {
+                            let status = text(&item, "status");
+                            vec![AgentEvent::ToolUse {
+                                tool: format!("crew_done/{tool}"),
+                                detail: json!({
+                                    "id": text(&item, "id"),
+                                    "status": if status == "failed" { "failed" } else { "done" },
+                                    "raw": item
+                                }).to_string(),
+                            }]
+                        }
+                    }
                     Some("fileChange") => {
                         let status = text(&item, "status");
                         let ok = status != "failed" && status != "declined";
