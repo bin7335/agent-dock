@@ -481,6 +481,36 @@ fn build_firstmate_prompt(request: &str, crew_model: &str, allow_writes: bool) -
     ))
 }
 
+fn prioritize_crew_model(selected: &str, chosen: &[String], available: &[String]) -> Result<Vec<String>, String> {
+    let selected = selected.trim();
+    if selected.is_empty() || !available.iter().any(|model| model == selected) {
+        return Err(format!("OpenCodex does not advertise the selected crew model: {selected}"));
+    }
+    let mut models = vec![selected.to_owned()];
+    for model in chosen {
+        if models.len() == 5 { break; }
+        if available.iter().any(|available_model| available_model == model) && !models.contains(model) {
+            models.push(model.clone());
+        }
+    }
+    Ok(models)
+}
+
+async fn ensure_ocx_subagent_model(selected: &str) -> Result<serde_json::Value, String> {
+    let state = parse_ocx_response(&ocx_request("/api/subagent-models", true, "30").await?)?;
+    let strings = |key: &str| -> Result<Vec<String>, String> {
+        state[key].as_array()
+            .ok_or_else(|| format!("OpenCodex subagent model response is missing {key}"))?
+            .iter()
+            .map(|value| value.as_str().map(str::to_owned)
+                .ok_or_else(|| format!("OpenCodex returned a non-string {key} entry")))
+            .collect()
+    };
+    let models = prioritize_crew_model(selected, &strings("chosen")?, &strings("available")?)?;
+    let body = serde_json::json!({"models": models}).to_string();
+    parse_ocx_response(&ocx_put("/api/subagent-models", body, "30").await?)
+}
+
 #[tauri::command]
 async fn start_firstmate(
     app: AppHandle,
@@ -499,6 +529,7 @@ async fn start_firstmate(
     get_ocx_health().await?;
     let mode = parse_ocx_response(&ocx_request("/api/v2", true, "8").await?)?;
     validate_crew_mode(mode["multiAgentMode"].as_str().unwrap_or(""))?;
+    ensure_ocx_subagent_model(&crew_model).await?;
     let prompt = build_firstmate_prompt(&request, &crew_model, allow_writes)?;
     let adapter = adapter_for(CliId::Codex)?;
     let job = make_job(prompt, project.to_string_lossy().into_owned(), allow_writes, Some(model));
@@ -963,12 +994,13 @@ fn ocx_base_url() -> Result<String, String> {
 }
 
 async fn ocx_request(path: &str, authenticated: bool, timeout: &str) -> Result<String, String> {
-    ocx_request_body(path, authenticated, timeout, None).await
+    let token = if authenticated { read_admin_token()? } else { String::new() };
+    bearer_request(&format!("{}{path}", ocx_base_url()?), token, timeout, None).await
 }
 
-async fn ocx_request_body(path: &str, authenticated: bool, timeout: &str, body: Option<String>) -> Result<String, String> {
-    let token = if authenticated { read_admin_token()? } else { String::new() };
-    bearer_request(&format!("{}{path}", ocx_base_url()?), token, timeout, body).await
+async fn ocx_put(path: &str, body: String, timeout: &str) -> Result<String, String> {
+    let token = read_admin_token()?;
+    bearer_request_method(&format!("{}{path}", ocx_base_url()?), token, timeout, Some(body), "PUT").await
 }
 
 async fn ocx_post(path: &str, body: String, timeout: &str) -> Result<String, String> {
@@ -1247,7 +1279,7 @@ async fn get_crew_mode() -> Result<serde_json::Value, String> {
 async fn set_crew_mode(mode: String) -> Result<serde_json::Value, String> {
     validate_crew_mode(&mode)?;
     let body = serde_json::json!({"multiAgentMode": mode}).to_string();
-    parse_ocx_response(&ocx_request_body("/api/v2", true, "30", Some(body)).await?)
+    parse_ocx_response(&ocx_put("/api/v2", body, "30").await?)
 }
 
 #[cfg(test)]
@@ -1279,6 +1311,26 @@ mod ocx_tests {
             assert!(prompt.contains(expected), "missing prompt contract: {expected}");
         }
         assert!(prompt.contains(r#"provider/model\"with-quote"#));
+    }
+
+    #[test]
+    fn selected_crew_model_is_registered_first() {
+        let chosen = vec!["provider/old".to_owned(), "provider/stale".to_owned()];
+        let available = vec!["provider/new".to_owned(), "provider/old".to_owned(), "provider/extra".to_owned()];
+        assert_eq!(
+            prioritize_crew_model("provider/new", &chosen, &available).unwrap(),
+            vec!["provider/new".to_owned(), "provider/old".to_owned()]
+        );
+    }
+
+    #[test]
+    fn unavailable_crew_model_is_rejected() {
+        let error = prioritize_crew_model(
+            "provider/missing",
+            &["provider/old".to_owned()],
+            &["provider/old".to_owned()],
+        ).unwrap_err();
+        assert!(error.contains("provider/missing"));
     }
 
     #[test]

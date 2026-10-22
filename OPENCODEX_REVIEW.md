@@ -1,6 +1,6 @@
 # Opencodex 연동 검토 및 UI 개선
 
-기준: coseung2/opencodex `f6735fd552b04ad7ef59abbd99aa54a707121113` (2.8.0-cs.32), 2026-09-21.
+기준: coseung2/opencodex `77326281eabe57d7d2eab47480c9020fad2742aa` (2.8.0-cs.35), 2026-10-18. Agent Dock 반영일: 2026-10-22.
 
 ## 반영 완료
 
@@ -13,6 +13,10 @@
 - 접힌 창 380×188, 상세 표시 시 380×440, 펼친 창 520×740. 개요·대화·설정 탭과 창 닫기 추가.
 - 동작하지 않는 OAuth·AFK·자동 전환 UI 제거. 실제 Opencodex 대시보드와 CLI 로그인으로 연결.
 - 현재 대화의 쓰기 설정을 정확히 표시하고 새 대화에만 변경 적용. 한글 조합 중 Enter 전송 방지.
+- Firstmate 시작 전에 선택한 crew 모델을 `/api/subagent-models`의 첫 모델로 등록. 기존 유효 모델은 최대 5개까지 보존하고, OpenCodex가 제공하지 않는 모델은 실행 전에 차단.
+- cs.35의 Notch·Claude 에이전트 동기화 흐름에 맞춰 crew 모델 설정을 OpenCodex 설정과 Claude 에이전트 정의에 함께 반영.
+- crew 모드 변경이 GET 요청 본문으로 전송되던 오류를 수정하고 `/api/v2`에 PUT 요청을 사용.
+- GPT-6 Sol·Luna 등 신규 모델은 기존 동적 `/api/models` 조회를 통해 별도 하드코딩 없이 노출.
 
 ## 남은 수정 후보 — 실행 수명 관리 우선
 
